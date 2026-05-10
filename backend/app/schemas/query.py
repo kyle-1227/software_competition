@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import BaseModel, Field
 from pydantic import StringConstraints
@@ -17,6 +17,8 @@ class EvidenceItem(BaseModel):
     source: str
     page: int | None = None
     snippet: str
+    score: float | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class PlanStep(BaseModel):
@@ -24,7 +26,26 @@ class PlanStep(BaseModel):
     status: str
 
 
+class ToolCallItem(BaseModel):
+    tool_name: str
+    input: dict[str, Any] = Field(default_factory=dict)
+    output: dict[str, Any] | list[dict[str, Any]] | str | None = None
+    status: str
+    duration_ms: int | None = None
+
+
+class EvaluationResult(BaseModel):
+    is_safe: bool
+    is_compliant: bool
+    confidence: float
+    issues: list[str] = Field(default_factory=list)
+
+
 class QueryResponse(BaseModel):
     answer: str
     plan: list[PlanStep]
     evidence: list[EvidenceItem]
+    tool_calls: list[ToolCallItem] = Field(default_factory=list)
+    evaluation: EvaluationResult | None = None
+    trace_id: str | None = None
+    sop: list[str] = Field(default_factory=list)
