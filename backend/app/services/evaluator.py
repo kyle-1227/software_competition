@@ -36,6 +36,15 @@ class Evaluator:
             issues.append("回答缺少必要的安全或合规提示。")
         if not evidence:
             issues.append("缺少手册证据支撑。")
+        sandbox_call = next(
+            (call for call in tool_calls if call.tool_name == "sandbox_execute"),
+            None,
+        )
+        if sandbox_call and isinstance(sandbox_call.output, dict):
+            if sandbox_call.output.get("allowed") is False:
+                issues.append("AI Coding 脚本被 Sandbox 拒绝执行。")
+            elif sandbox_call.output.get("return_code") not in (None, 0):
+                issues.append("AI Coding 脚本执行返回非零状态。")
 
         confidence = 0.35
         if evidence:

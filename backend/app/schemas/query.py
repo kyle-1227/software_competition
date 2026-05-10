@@ -34,6 +34,16 @@ class ToolCallItem(BaseModel):
     duration_ms: int | None = None
 
 
+class SandboxResult(BaseModel):
+    language: str
+    allowed: bool
+    return_code: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    error: str | None = None
+    duration_ms: int | None = None
+
+
 class EvaluationResult(BaseModel):
     is_safe: bool
     is_compliant: bool
@@ -49,3 +59,5 @@ class QueryResponse(BaseModel):
     evaluation: EvaluationResult | None = None
     trace_id: str | None = None
     sop: list[str] = Field(default_factory=list)
+    memory: list[dict[str, Any]] = Field(default_factory=list)
+    ai_coding: dict[str, Any] | None = None

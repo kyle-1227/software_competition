@@ -19,5 +19,6 @@ class ComplianceCheckTool(BaseTool):
                 "is_compliant": not missing_terms,
                 "missing_terms": missing_terms,
                 "checked_terms": list(self._required_terms),
+                "risk_level": "low" if not missing_terms else "medium",
             },
         )

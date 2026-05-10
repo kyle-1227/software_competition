@@ -1,6 +1,14 @@
 from uuid import uuid4
 
-from app.schemas.query import EvidenceItem, EvaluationResult, PlanStep, ToolCallItem
+from typing import Any
+
+from app.schemas.query import (
+    EvidenceItem,
+    EvaluationResult,
+    PlanStep,
+    SandboxResult,
+    ToolCallItem,
+)
 
 
 class TraceStore:
@@ -21,6 +29,8 @@ class TraceStore:
             "evidence": [],
             "answer": None,
             "evaluation": None,
+            "memory": [],
+            "sandbox_result": None,
         }
         return trace_id
 
@@ -44,6 +54,14 @@ class TraceStore:
     ) -> None:
         self._ensure_trace(trace_id)["evaluation"] = evaluation
 
+    def record_memory(self, trace_id: str, memory: list[dict[str, Any]]) -> None:
+        self._ensure_trace(trace_id)["memory"] = memory
+
+    def record_sandbox_result(
+        self, trace_id: str, sandbox_result: SandboxResult | None
+    ) -> None:
+        self._ensure_trace(trace_id)["sandbox_result"] = sandbox_result
+
     def get_trace(self, trace_id: str) -> dict[str, object]:
         return dict(self._ensure_trace(trace_id))
 
@@ -55,5 +73,7 @@ class TraceStore:
                 "evidence": [],
                 "answer": None,
                 "evaluation": None,
+                "memory": [],
+                "sandbox_result": None,
             }
         return self._traces[trace_id]

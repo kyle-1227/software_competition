@@ -6,9 +6,12 @@ from app.schemas.query import (
     PlanStep,
     QueryRequest,
     QueryResponse,
+    SandboxResult,
     ToolCallItem,
 )
 from app.services.evaluator import Evaluator
+from app.services.memory_store import MemoryStore
+from app.services.sandbox import SandboxExecutor
 from app.services.tool_registry import ToolRegistry, ToolResult
 from app.services.trace_store import TraceStore
 
@@ -29,14 +32,21 @@ class AgentHarness:
         self,
         tool_registry: ToolRegistry | None = None,
         trace_store: TraceStore | None = None,
+        memory_store: MemoryStore | None = None,
+        sandbox_executor: SandboxExecutor | None = None,
         evaluator: Evaluator | None = None,
     ) -> None:
         self.tool_registry = tool_registry or ToolRegistry()
         self.trace_store = trace_store or TraceStore()
+        self.memory_store = memory_store or MemoryStore()
+        self.sandbox_executor = sandbox_executor or SandboxExecutor()
         self.evaluator = evaluator or Evaluator()
 
     async def answer(self, payload: QueryRequest) -> QueryResponse:
         trace_id = self.trace_store.start_trace()
+        session_id = self._session_id(payload)
+        memory = self.memory_store.get_history(session_id)
+        self.trace_store.record_memory(trace_id, memory)
         plan = self._build_plan(payload)
         self.trace_store.record_plan(trace_id, plan)
 
@@ -55,11 +65,40 @@ class AgentHarness:
         self.trace_store.record_evidence(trace_id, evidence)
 
         ai_result = None
+        ai_coding: dict[str, Any] | None = None
+        sandbox_result: SandboxResult | None = None
         if self._needs_ai_coding(payload.question):
             ai_result = await self.tool_registry.execute(
-                "ai_coding", {"question": payload.question, "task": payload.question}
+                "ai_coding",
+                {
+                    "question": payload.question,
+                    "task": payload.question,
+                    "language": self._infer_script_language(payload.question),
+                },
             )
             tool_calls.append(self._to_tool_call(ai_result, payload.question))
+            if isinstance(ai_result.data, dict):
+                ai_coding = dict(ai_result.data)
+                sandbox_result = self.sandbox_executor.execute(
+                    str(ai_result.data.get("script", "")),
+                    str(ai_result.data.get("language", "python")),
+                )
+                ai_coding["sandbox_result"] = sandbox_result.model_dump(mode="json")
+                tool_calls.append(
+                    ToolCallItem(
+                        tool_name="sandbox_execute",
+                        input={
+                            "language": sandbox_result.language,
+                            "script": ai_result.data.get("script", ""),
+                        },
+                        output=sandbox_result.model_dump(mode="json"),
+                        status="success"
+                        if sandbox_result.allowed and sandbox_result.return_code == 0
+                        else "failed",
+                        duration_ms=sandbox_result.duration_ms,
+                    )
+                )
+                self.trace_store.record_sandbox_result(trace_id, sandbox_result)
 
         answer = self._draft_answer(payload, evidence, [manual_result, ai_result])
         self.trace_store.record_answer(trace_id, answer)
@@ -74,6 +113,15 @@ class AgentHarness:
 
         evaluation = self.evaluator.evaluate(answer, evidence, tool_calls)
         self.trace_store.record_evaluation(trace_id, evaluation)
+        self.memory_store.add_trace(
+            session_id,
+            {
+                "trace_id": trace_id,
+                "question": payload.question,
+                "answer": answer,
+                "evaluation": evaluation.model_dump(mode="json"),
+            },
+        )
 
         return QueryResponse(
             answer=answer,
@@ -83,6 +131,8 @@ class AgentHarness:
             evaluation=evaluation,
             trace_id=trace_id,
             sop=self._build_sop(),
+            memory=memory,
+            ai_coding=ai_coding,
         )
 
     def _build_plan(self, payload: QueryRequest) -> list[PlanStep]:
@@ -138,6 +188,17 @@ class AgentHarness:
 
     def _needs_ai_coding(self, question: str) -> bool:
         return any(keyword in question.lower() for keyword in ("脚本", "代码", "script", "code"))
+
+    def _infer_script_language(self, question: str) -> str:
+        lowered = question.lower()
+        if "sql" in lowered or "数据库" in question:
+            return "sql"
+        if "shell" in lowered or "powershell" in lowered or "命令" in question:
+            return "shell"
+        return "python"
+
+    def _session_id(self, payload: QueryRequest) -> str:
+        return payload.device_model or payload.device_name or "default"
 
     def _build_sop(self) -> list[str]:
         return [

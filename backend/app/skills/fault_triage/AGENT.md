@@ -5,6 +5,7 @@ Role: identify the likely failure path from a device question and available manu
 Inputs:
 - user question
 - device name and model
+- recent MemoryStore history
 - manual evidence
 - prior tool calls
 
@@ -17,6 +18,7 @@ Constraints:
 - Use manual evidence before giving repair advice.
 - Include safety prerequisites before inspection steps.
 - Escalate when evidence is missing or conflicting.
+- Treat historical trace as context, not proof.
 
 Evaluation standards:
 - cites evidence

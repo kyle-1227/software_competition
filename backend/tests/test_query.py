@@ -23,6 +23,21 @@ def test_query_returns_harness_trace_fields() -> None:
     assert data["evaluation"]["confidence"] > 0
     assert data["trace_id"]
     assert data["sop"]
+    assert "memory" in data
+    assert "ai_coding" in data
+
+
+def test_query_returns_ai_coding_and_sandbox_result() -> None:
+    response = client.post(
+        "/api/query",
+        json={"question": "生成 SQL 脚本检查诊断记录", "device_name": "摩托车发动机"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["ai_coding"]["language"] == "sql"
+    assert data["ai_coding"]["sandbox_result"]["allowed"] is True
+    assert any(call["tool_name"] == "sandbox_execute" for call in data["tool_calls"])
 
 
 def test_manual_alias_register_missing_file_uses_error_envelope() -> None:

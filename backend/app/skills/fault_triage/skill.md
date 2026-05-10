@@ -2,6 +2,7 @@
 
 PlanSteps:
 - normalize device and symptom
+- load session history from MemoryStore
 - call manual_lookup
 - compare symptom with evidence
 - draft likely diagnosis
@@ -10,6 +11,7 @@ PlanSteps:
 Tools:
 - manual_lookup
 - compliance_check
+- MemoryStore
 
 Failure handling:
 - if no evidence is found, ask for device model, symptoms, or manual upload

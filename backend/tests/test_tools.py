@@ -18,9 +18,24 @@ async def test_tool_registry_executes_default_tools() -> None:
     assert isinstance(coding_result.data, dict)
     assert coding_result.data["language"] == "python"
 
+    sql_result = await registry.execute(
+        "ai_coding", {"task": "生成 SQL 检查脚本", "language": "sql"}
+    )
+    assert sql_result.success is True
+    assert isinstance(sql_result.data, dict)
+    assert sql_result.data["language"] == "sql"
+
+    shell_result = await registry.execute(
+        "ai_coding", {"task": "生成 Shell 检查脚本", "language": "shell"}
+    )
+    assert shell_result.success is True
+    assert isinstance(shell_result.data, dict)
+    assert shell_result.data["language"] == "shell"
+
     compliance_result = await registry.execute(
         "compliance_check", {"answer": "先停机断电，佩戴防护用品，确认风险。"}
     )
     assert compliance_result.success is True
     assert isinstance(compliance_result.data, dict)
     assert compliance_result.data["is_compliant"] is True
+    assert compliance_result.data["risk_level"] == "low"
