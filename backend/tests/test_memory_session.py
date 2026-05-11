@@ -23,6 +23,8 @@ async def test_memory_is_session_scoped() -> None:
     )
 
     assert first.trace_id is not None
+    assert second.trace_id is not None
+    assert first.trace_id != second.trace_id
     assert second.memory is not None
 
 

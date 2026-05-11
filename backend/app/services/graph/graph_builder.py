@@ -71,7 +71,7 @@ def _build_nodes(services) -> dict[str, Any]:
             "device_name": state.get("device_name"),
             "device_model": state.get("device_model"),
             "session_id": session_id,
-            "trace_id": state.get("trace_id") or _trace_placeholder(session_id),
+            "trace_id": state.get("trace_id") or services.trace_store.start_trace(),
             "errors": [],
             "warnings": [],
             "tool_calls": [],
@@ -154,28 +154,8 @@ def _build_nodes(services) -> dict[str, Any]:
                 "duration_ms": result.metadata.get("duration_ms"),
             }
         ]
-        sandbox_result = services.sandbox_executor.execute(
-            ai_coding["script"], ai_coding["language"]
-        )
-        ai_coding["sandbox_result"] = sandbox_result.model_dump(mode="json")
-        tool_calls.append(
-            {
-                "tool_name": "sandbox_execute",
-                "input": {
-                    "language": ai_coding["language"],
-                    "script_hash": _script_hash(ai_coding["script"]),
-                    "script_preview": ai_coding["script"][:120],
-                },
-                "output": sandbox_result.model_dump(mode="json"),
-                "status": "success"
-                if sandbox_result.allowed and sandbox_result.return_code == 0
-                else "failed",
-                "duration_ms": sandbox_result.duration_ms,
-            }
-        )
         return {
             "ai_coding": ai_coding,
-            "sandbox_result": sandbox_result.model_dump(mode="json"),
             "tool_calls": tool_calls,
         }
 
@@ -197,8 +177,11 @@ def _build_nodes(services) -> dict[str, Any]:
             "status": "success" if result.allowed and result.return_code == 0 else "failed",
             "duration_ms": result.duration_ms,
         }
+        sandbox_result = result.model_dump(mode="json")
+        ai_coding = {**ai_coding, "sandbox_result": sandbox_result}
         return {
-            "sandbox_result": result.model_dump(mode="json"),
+            "ai_coding": ai_coding,
+            "sandbox_result": sandbox_result,
             "tool_calls": state.get("tool_calls", []) + [tool_call],
         }
 
@@ -370,10 +353,6 @@ def _needs_ai_coding(question: str) -> bool:
 
 def _script_hash(script: str) -> str:
     return hashlib.sha256(script.encode("utf-8")).hexdigest()
-
-
-def _trace_placeholder(session_id: str) -> str:
-    return f"trace-{hashlib.sha256(session_id.encode('utf-8')).hexdigest()[:12]}"
 
 
 def _tool_call_dict_to_model(item: dict[str, Any]):

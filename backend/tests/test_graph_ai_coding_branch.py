@@ -14,6 +14,7 @@ async def test_ai_coding_branch_is_used_for_code_questions() -> None:
     assert response.ai_coding is not None
     assert response.ai_coding["language"] == "python"
     assert response.ai_coding["sandbox_result"]["allowed"] is True
+    assert sum(call.tool_name == "sandbox_execute" for call in response.tool_calls) == 1
 
 
 @pytest.mark.anyio
