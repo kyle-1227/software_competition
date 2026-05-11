@@ -4,7 +4,6 @@ type IconName =
   | "attach"
   | "book"
   | "check"
-  | "chevron"
   | "clipboard"
   | "file"
   | "filter"
@@ -18,91 +17,13 @@ type IconName =
   | "upload"
   | "wrench";
 
-<<<<<<< HEAD
 type SceneKey = "maintenance" | "education";
 type ArtifactTab = "path" | "evidence" | "log";
 type WorkflowStatus = "idle" | "analyzing" | "retrieving" | "completed";
 type FeedbackChoice = "accurate" | "inaccurate" | "supplement" | null;
-=======
-type ArtifactTab = "sop" | "evidence" | "log";
-type JsonMap = Record<string, unknown>;
-
-interface ApiEnvelope<T> {
-  success: boolean;
-  data: T | null;
-  error: {
-    code: string;
-    message: string;
-    details?: unknown;
-  } | null;
-  trace_id: string;
-}
-
-interface EvidenceItem {
-  source: string;
-  page: number | null;
-  snippet: string;
-  score: number | null;
-  metadata: JsonMap;
-}
-
-interface PlanStep {
-  step: string;
-  status: string;
-}
-
-interface ToolCallItem {
-  tool_name: string;
-  input: JsonMap;
-  output: JsonMap | JsonMap[] | string | null;
-  status: string;
-  duration_ms: number | null;
-}
-
-interface EvaluationResult {
-  is_safe: boolean;
-  is_compliant: boolean;
-  confidence: number;
-  issues: string[];
-}
-
-interface SandboxResult {
-  language: string;
-  allowed: boolean;
-  return_code: number | null;
-  stdout: string;
-  stderr: string;
-  error: string | null;
-  duration_ms: number | null;
-}
-
-interface AICodingResult {
-  language?: string;
-  script?: string;
-  explanation?: string;
-  warnings?: string[];
-  sandbox_result?: SandboxResult | JsonMap | null;
-  [key: string]: unknown;
-}
-
-interface QueryResponse {
-  answer: string;
-  plan: PlanStep[];
-  evidence: EvidenceItem[];
-  tool_calls: ToolCallItem[];
-  evaluation: EvaluationResult | null;
-  trace_id: string | null;
-  sop: string[];
-  memory: JsonMap[];
-  ai_coding: AICodingResult | null;
-  llm_usage: JsonMap | null;
-  llm_model: string | null;
-}
->>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
 
 type PromptCard = {
   title: string;
-<<<<<<< HEAD
   detail: string;
   prompt: string;
   accent: "brick" | "sage" | "blue";
@@ -119,7 +40,6 @@ type SceneConfig = {
   label: string;
   badge: string;
   title: string;
-  eyebrow: string;
   modes: string[];
   cards: PromptCard[];
   recent: Array<{ title: string; meta: string; active?: boolean }>;
@@ -148,14 +68,90 @@ type SceneConfig = {
 type ThreadItem = {
   id: number;
   prompt: string;
-  answer: string;
+  response?: QueryResponse | null;
+  error?: string | null;
+  loading?: boolean;
 };
 
 type SelectedFile = {
   id: number;
   name: string;
-  kind: string;
+  kind: "资料" | "图片" | "知识库引用";
   status: string;
+};
+
+type JsonMap = Record<string, unknown>;
+
+type ApiEnvelope<T> = {
+  success: boolean;
+  data: T | null;
+  error: {
+    code: string;
+    message: string;
+    details?: unknown;
+  } | null;
+  trace_id: string;
+};
+
+type EvidenceItem = {
+  source: string;
+  page: number | null;
+  snippet: string;
+  score: number | null;
+  metadata: JsonMap;
+};
+
+type PlanStep = {
+  step: string;
+  status: string;
+};
+
+type ToolCallItem = {
+  tool_name: string;
+  input: JsonMap;
+  output: JsonMap | JsonMap[] | string | null;
+  status: string;
+  duration_ms: number | null;
+};
+
+type EvaluationResult = {
+  is_safe: boolean;
+  is_compliant: boolean;
+  confidence: number;
+  issues: string[];
+};
+
+type SandboxResult = {
+  language: string;
+  allowed: boolean;
+  return_code: number | null;
+  stdout: string;
+  stderr: string;
+  error: string | null;
+  duration_ms: number | null;
+};
+
+type AICodingResult = {
+  language?: string;
+  script?: string;
+  explanation?: string;
+  warnings?: string[];
+  sandbox_result?: SandboxResult | JsonMap | null;
+  [key: string]: unknown;
+};
+
+type QueryResponse = {
+  answer: string;
+  plan: PlanStep[];
+  evidence: EvidenceItem[];
+  tool_calls: ToolCallItem[];
+  evaluation: EvaluationResult | null;
+  trace_id: string | null;
+  sop: string[];
+  memory: JsonMap[];
+  ai_coding: AICodingResult | null;
+  llm_usage: JsonMap | null;
+  llm_model: string | null;
 };
 
 const sceneConfig: Record<SceneKey, SceneConfig> = {
@@ -163,7 +159,6 @@ const sceneConfig: Record<SceneKey, SceneConfig> = {
     label: "设备检修助手",
     badge: "Equipment Maintenance Agent",
     title: "今天要排查哪类故障？",
-    eyebrow: "Multi-Agent Knowledge Assistant",
     modes: ["诊断", "检索", "复核"],
     cards: [
       {
@@ -251,7 +246,6 @@ const sceneConfig: Record<SceneKey, SceneConfig> = {
     label: "个性化学习助手",
     badge: "Personalized Learning Agent",
     title: "今天想学习哪个知识点？",
-    eyebrow: "Multi-Agent Knowledge Assistant",
     modes: ["画像", "讲解", "练习"],
     cards: [
       {
@@ -336,16 +330,6 @@ const sceneConfig: Record<SceneKey, SceneConfig> = {
     feedbackSavedText: "反馈已保存，用于后续优化",
   },
 };
-=======
-  meta: string;
-  active?: boolean;
-}> = [
-  { title: "怠速不稳和回火排查", meta: "2 分钟前", active: true },
-  { title: "机油压力灯异常", meta: "今天 14:20" },
-  { title: "冷车启动困难", meta: "昨天" },
-  { title: "气门间隙复检", meta: "周二" },
-];
->>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
 
 const navItems: Array<{
   icon: IconName;
@@ -360,35 +344,7 @@ const navItems: Array<{
   { icon: "check", label: "反馈标注" },
 ];
 
-<<<<<<< HEAD
 const tabOrder: ArtifactTab[] = ["path", "evidence", "log"];
-=======
-const promptCards: Array<{
-  title: string;
-  detail: string;
-  prompt: string;
-  accent: string;
-}> = [
-  {
-    title: "怠速不稳",
-    detail: "生成检查顺序和证据页",
-    prompt: "热车后怠速不稳，排气管偶尔回火，应该先检查哪里？",
-    accent: "brick",
-  },
-  {
-    title: "启动困难",
-    detail: "定位燃油、点火、压缩链路",
-    prompt: "冷车启动困难，启动机转速正常但发动机不着车，请给出排查流程。",
-    accent: "sage",
-  },
-  {
-    title: "生成脚本",
-    detail: "调用 AI Coding 和沙箱",
-    prompt: "生成 SQL 脚本检查诊断记录",
-    accent: "blue",
-  },
-];
->>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
 
 const workflowLabels: Record<WorkflowStatus, string> = {
   idle: "已完成",
@@ -396,9 +352,6 @@ const workflowLabels: Record<WorkflowStatus, string> = {
   retrieving: "检索中",
   completed: "已完成",
 };
-
-const fallbackAssistantText =
-  "我会先按进气漏气、点火偏弱、怠速调整偏差三个方向缩小范围。目前证据更指向进气系统密封和火花塞状态，建议不要先拆化油器总成。";
 
 function Icon({ name }: { name: IconName }) {
   const props = {
@@ -431,12 +384,6 @@ function Icon({ name }: { name: IconName }) {
       return (
         <svg {...props}>
           <path d="m5 12 4 4L19 6" />
-        </svg>
-      );
-    case "chevron":
-      return (
-        <svg {...props}>
-          <path d="m9 18 6-6-6-6" />
         </svg>
       );
     case "clipboard":
@@ -540,73 +487,23 @@ function Icon({ name }: { name: IconName }) {
   }
 }
 
-<<<<<<< HEAD
-function createInitialThread(config: SceneConfig): ThreadItem[] {
-  return [
-    {
-      id: Date.now(),
-      prompt: config.cards[0].prompt,
-      answer: config.answer,
-    },
-  ];
-}
-
 function getAgentState(
   status: WorkflowStatus,
   index: number,
-  total: number,
 ): "done" | "active" | "pending" {
   if (status === "completed" || status === "idle") {
     return "done";
   }
 
-  const activeIndex = status === "analyzing" ? 0 : Math.min(1, total - 1);
+  const activeIndex = status === "analyzing" ? 0 : 1;
 
   if (index < activeIndex) {
     return "done";
   }
 
-  if (index === activeIndex) {
-    return "active";
-  }
-
-  return "pending";
+  return index === activeIndex ? "active" : "pending";
 }
 
-function App() {
-  const [scene, setScene] = useState<SceneKey>("maintenance");
-  const config = sceneConfig[scene];
-  const [draft, setDraft] = useState(config.cards[0].prompt);
-  const [thread, setThread] = useState<ThreadItem[]>(() => createInitialThread(config));
-  const [activeTab, setActiveTab] = useState<ArtifactTab>("path");
-  const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus>("completed");
-  const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([]);
-  const [feedbackChoice, setFeedbackChoice] = useState<FeedbackChoice>(null);
-  const [showCorrection, setShowCorrection] = useState(false);
-  const [correctionText, setCorrectionText] = useState("");
-  const [feedbackNotice, setFeedbackNotice] = useState("");
-  const docInputRef = useRef<HTMLInputElement>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null);
-
-  function resetFeedback() {
-    setFeedbackChoice(null);
-    setShowCorrection(false);
-    setCorrectionText("");
-    setFeedbackNotice("");
-  }
-
-  function handleSceneChange(nextScene: SceneKey) {
-    const nextConfig = sceneConfig[nextScene];
-
-    setScene(nextScene);
-    setDraft(nextConfig.cards[0].prompt);
-    setThread(createInitialThread(nextConfig));
-    setActiveTab("path");
-    setWorkflowStatus("completed");
-    setSelectedFiles([]);
-    resetFeedback();
-  }
-=======
 function formatJson(value: unknown) {
   if (value === null || value === undefined) {
     return "null";
@@ -623,9 +520,9 @@ function formatJson(value: unknown) {
   }
 }
 
-function formatConfidence(confidence?: number | null) {
+function formatConfidence(confidence?: number | null, fallback = 91) {
   if (typeof confidence !== "number" || Number.isNaN(confidence)) {
-    return 91;
+    return fallback;
   }
 
   const normalized = confidence <= 1 ? confidence * 100 : confidence;
@@ -650,40 +547,86 @@ function hasMetadata(metadata: JsonMap) {
 }
 
 function App() {
-  const [draft, setDraft] = useState(promptCards[0].prompt);
-  const [submittedPrompt, setSubmittedPrompt] = useState(promptCards[0].prompt);
-  const [activeTab, setActiveTab] = useState<ArtifactTab>("sop");
-  const [response, setResponse] = useState<QueryResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
->>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
+  const [scene, setScene] = useState<SceneKey>("maintenance");
+  const config = sceneConfig[scene];
+  const [draft, setDraft] = useState(config.cards[0].prompt);
+  const [thread, setThread] = useState<ThreadItem[]>([
+    { id: Date.now(), prompt: config.cards[0].prompt, response: null },
+  ]);
+  const [activeTab, setActiveTab] = useState<ArtifactTab>("path");
+  const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus>("completed");
+  const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([]);
+  const [feedbackChoice, setFeedbackChoice] = useState<FeedbackChoice>(null);
+  const [showCorrection, setShowCorrection] = useState(false);
+  const [correctionText, setCorrectionText] = useState("");
+  const [feedbackNotice, setFeedbackNotice] = useState("");
+  const docInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const latestThreadItem = thread[thread.length - 1];
+  const latestResponse = latestThreadItem?.response ?? null;
+  const latestError = latestThreadItem?.error ?? null;
+  const isBackendLoading = Boolean(latestThreadItem?.loading);
+  const confidence = formatConfidence(
+    latestResponse?.evaluation?.confidence,
+    config.confidence,
+  );
+  const displayedSteps = latestResponse?.sop?.length
+    ? latestResponse.sop
+    : latestResponse?.plan?.length
+      ? latestResponse.plan.map((item) => item.step)
+      : config.steps;
+  const displayedSources = latestResponse?.evidence?.length
+    ? latestResponse.evidence.map((item) => ({
+        doc: item.source,
+        locator: evidencePageLabel(item.page),
+        summary: item.snippet,
+        confidence: formatConfidence(item.score, config.confidence),
+      }))
+    : config.sources;
+  const displayedLogs = latestResponse?.tool_calls?.length
+    ? latestResponse.tool_calls.map((call) => ({
+        title: call.tool_name,
+        detail: `${call.status}${call.duration_ms !== null ? ` · ${call.duration_ms} ms` : ""}`,
+      }))
+    : config.logs;
 
-  const confidence = formatConfidence(response?.evaluation?.confidence);
-  const displayedSop = response?.sop?.length ? response.sop : sopSteps;
-  const assistantText = loading
-    ? "正在调用 Harness..."
-    : error
-      ? error
-      : response?.answer || fallbackAssistantText;
-  const inlineEvidence = response?.evidence?.length
-    ? response.evidence.slice(0, 2)
-    : null;
+  function resetFeedback() {
+    setFeedbackChoice(null);
+    setShowCorrection(false);
+    setCorrectionText("");
+    setFeedbackNotice("");
+  }
+
+  function handleSceneChange(nextScene: SceneKey) {
+    const nextConfig = sceneConfig[nextScene];
+
+    setScene(nextScene);
+    setDraft(nextConfig.cards[0].prompt);
+    setThread([{ id: Date.now(), prompt: nextConfig.cards[0].prompt, response: null }]);
+    setActiveTab("path");
+    setWorkflowStatus("completed");
+    setSelectedFiles([]);
+    resetFeedback();
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextPrompt = draft.trim();
 
-<<<<<<< HEAD
-    if (!nextPrompt) {
-      return;
-=======
-    if (!nextPrompt || loading) {
+    if (!nextPrompt || isBackendLoading) {
       return;
     }
 
-    setSubmittedPrompt(nextPrompt);
-    setError(null);
-    setLoading(true);
+    const nextId = Date.now();
+
+    setThread((current) => [
+      ...current,
+      { id: nextId, prompt: nextPrompt, response: null, error: null, loading: true },
+    ]);
+    setWorkflowStatus("analyzing");
+    resetFeedback();
+
+    window.setTimeout(() => setWorkflowStatus("retrieving"), 450);
 
     try {
       const httpResponse = await fetch("/api/query", {
@@ -693,8 +636,15 @@ function App() {
         },
         body: JSON.stringify({
           question: nextPrompt,
-          device_name: "摩托车发动机",
-          session_id: "demo-session",
+          device_name:
+            scene === "maintenance"
+              ? config.profile.rows.find((row) => row.label === "类型")?.value
+              : undefined,
+          device_model:
+            scene === "maintenance"
+              ? config.profile.rows.find((row) => row.label === "型号")?.value
+              : undefined,
+          session_id: `demo-${scene}`,
         }),
       });
       const envelope = (await httpResponse.json()) as ApiEnvelope<QueryResponse>;
@@ -703,31 +653,28 @@ function App() {
         throw new Error(envelope.error?.message || `请求失败：${httpResponse.status}`);
       }
 
-      setResponse(envelope.data);
+      setThread((current) =>
+        current.map((item) =>
+          item.id === nextId
+            ? { ...item, response: envelope.data, loading: false, error: null }
+            : item,
+        ),
+      );
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "调用 Harness 失败");
+      setThread((current) =>
+        current.map((item) =>
+          item.id === nextId
+            ? {
+                ...item,
+                loading: false,
+                error: caught instanceof Error ? caught.message : "调用 Harness 失败",
+              }
+            : item,
+        ),
+      );
     } finally {
-      setLoading(false);
->>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
+      setWorkflowStatus("completed");
     }
-
-    setThread((current) => [
-      ...current,
-      {
-        id: Date.now(),
-        prompt: nextPrompt,
-        answer: config.answer,
-      },
-    ]);
-    setWorkflowStatus("analyzing");
-    resetFeedback();
-
-    window.setTimeout(() => setWorkflowStatus("retrieving"), 450);
-    window.setTimeout(() => setWorkflowStatus("completed"), 900);
-  }
-
-  function handlePromptCardClick(card: PromptCard) {
-    setDraft(card.prompt);
   }
 
   function handleFileChange(
@@ -833,8 +780,8 @@ function App() {
                 conversation.active ? " is-active" : ""
               }`}
               key={conversation.title}
-              type="button"
               onClick={() => setDraft(conversation.title)}
+              type="button"
             >
               <span>{conversation.title}</span>
               <small>{conversation.meta}</small>
@@ -881,16 +828,14 @@ function App() {
         </header>
 
         <section className="welcome-block">
-          <p className="eyebrow">
-            {config.eyebrow} · {config.badge}
-          </p>
+          <p className="eyebrow">Multi-Agent Knowledge Assistant · {config.badge}</p>
           <h1>{config.title}</h1>
           <div className="prompt-grid">
             {config.cards.map((card) => (
               <button
                 className={`prompt-card accent-${card.accent}`}
                 key={card.title}
-                onClick={() => handlePromptCardClick(card)}
+                onClick={() => setDraft(card.prompt)}
                 type="button"
               >
                 <span>{card.title}</span>
@@ -903,8 +848,29 @@ function App() {
         <section className="thread" aria-label="对话内容">
           {thread.map((item, index) => {
             const isLatest = index === thread.length - 1;
+            const answerText = item.loading
+              ? "正在调用 Harness..."
+              : item.error
+                ? `接口联调失败：${item.error}。已保留当前场景 mock 结果用于展示。`
+                : item.response?.answer || config.answer;
+            const inlineSources = item.response?.evidence?.length
+              ? item.response.evidence.slice(0, 2).map((source) => ({
+                  key: `${source.source}-${source.page ?? "none"}`,
+                  locator: evidencePageLabel(source.page),
+                }))
+              : config.sources.slice(0, 2).map((source) => ({
+                  key: `${source.doc}-${source.locator}`,
+                  locator: source.locator,
+                }));
+            const ragSources = item.response?.evidence?.length
+              ? item.response.evidence.slice(0, 2).map((source) => ({
+                  doc: source.source,
+                  locator: evidencePageLabel(source.page),
+                  summary: source.snippet,
+                  confidence: formatConfidence(source.score, config.confidence),
+                }))
+              : config.sources.slice(0, 2);
 
-<<<<<<< HEAD
             return (
               <div className="thread-exchange" key={item.id}>
                 <article className="message-row is-user">
@@ -924,7 +890,7 @@ function App() {
                       <div className="agent-steps">
                         {config.agents.map((agent, agentIndex) => {
                           const state = isLatest
-                            ? getAgentState(workflowStatus, agentIndex, config.agents.length)
+                            ? getAgentState(workflowStatus, agentIndex)
                             : "done";
 
                           return (
@@ -936,15 +902,15 @@ function App() {
                       </div>
                     </div>
 
-                    <p>{item.answer}</p>
+                    <p className={item.error ? "assistant-error" : undefined}>{answerText}</p>
 
                     <div className="rag-preview">
                       <div className="assistant-section-title">
                         <span>RAG 来源依据</span>
-                        <small>Mock 检索结果</small>
+                        <small>{item.response ? "接口返回" : "Mock 检索结果"}</small>
                       </div>
                       <div className="rag-cards">
-                        {config.sources.slice(0, 2).map((source) => (
+                        {ragSources.map((source) => (
                           <article className="rag-card" key={`${source.doc}-${source.locator}`}>
                             <strong>
                               {source.doc} {source.locator}
@@ -957,10 +923,10 @@ function App() {
                     </div>
 
                     <div className="inline-evidence">
-                      {config.sources.slice(0, 2).map((item) => (
-                        <button key={`${item.doc}-${item.locator}`} type="button">
+                      {inlineSources.map((source) => (
+                        <button key={source.key} type="button">
                           <Icon name="file" />
-                          <span>{item.locator}</span>
+                          <span>{source.locator}</span>
                         </button>
                       ))}
                     </div>
@@ -1020,28 +986,6 @@ function App() {
                     ) : null}
                   </div>
                 </article>
-=======
-          <article className="message-row is-assistant">
-            <div className="assistant-avatar" aria-hidden="true">
-              A
-            </div>
-            <div className="assistant-message">
-              <p className={error ? "assistant-error" : undefined}>{assistantText}</p>
-              <div className="inline-evidence">
-                {inlineEvidence
-                  ? inlineEvidence.map((item, index) => (
-                      <button key={`${item.source}-${index}`} type="button">
-                        <Icon name="file" />
-                        <span>{evidencePageLabel(item.page)}</span>
-                      </button>
-                    ))
-                  : evidenceItems.slice(0, 2).map((item) => (
-                      <button key={item.page} type="button">
-                        <Icon name="file" />
-                        <span>{item.page}</span>
-                      </button>
-                    ))}
->>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
               </div>
             );
           })}
@@ -1123,7 +1067,7 @@ function App() {
             <button
               aria-label="发送"
               className="send-button"
-              disabled={loading}
+              disabled={isBackendLoading}
               type="submit"
             >
               <Icon name="send" />
@@ -1136,11 +1080,7 @@ function App() {
         <header className="artifact-header">
           <div>
             <p>Artifact</p>
-<<<<<<< HEAD
-            <h2>{config.artifactTitle}</h2>
-=======
-            <h2>{response?.ai_coding ? "AI Coding 记录" : "维修 SOP"}</h2>
->>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
+            <h2>{latestResponse?.ai_coding ? "AI Coding 记录" : config.artifactTitle}</h2>
           </div>
           <button aria-label="展开工作区" className="icon-button" type="button">
             <Icon name="panel" />
@@ -1196,35 +1136,24 @@ function App() {
 
             <div className="risk-strip">
               <span>可信度</span>
-<<<<<<< HEAD
-              <strong>{config.confidence}%</strong>
-              <div className="confidence-track">
-                <i style={{ width: `${config.confidence}%` }} />
-=======
               <strong>{confidence}%</strong>
               <div className="confidence-track">
                 <i style={{ width: `${confidence}%` }} />
->>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
               </div>
             </div>
 
-            {response?.evaluation?.issues?.length ? (
+            {latestResponse?.evaluation?.issues?.length ? (
               <div className="risk-issues">
                 <strong>风险提示</strong>
-                {response.evaluation.issues.map((issue) => (
+                {latestResponse.evaluation.issues.map((issue) => (
                   <span key={issue}>{issue}</span>
                 ))}
               </div>
             ) : null}
 
             <ol className="sop-list">
-<<<<<<< HEAD
-              {config.steps.map((step, index) => (
-                <li key={step}>
-=======
-              {displayedSop.map((step, index) => (
+              {displayedSteps.map((step, index) => (
                 <li key={`${step}-${index}`}>
->>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
                   <span>{index + 1}</span>
                   <p>{step}</p>
                 </li>
@@ -1250,48 +1179,34 @@ function App() {
         {activeTab === "evidence" ? (
           <section className="artifact-content">
             <div className="evidence-stack">
-<<<<<<< HEAD
-              {config.sources.map((item) => (
-                <article className="evidence-row" key={`${item.doc}-${item.locator}`}>
-                  <Icon name="file" />
-                  <div>
-                    <strong>
-                      {item.doc} {item.locator}
-                    </strong>
-                    <span>{item.summary}</span>
-                    <small>相似度 / 置信度 {item.confidence}%</small>
-                  </div>
-                </article>
-              ))}
-=======
-              {response?.evidence?.length
-                ? response.evidence.map((item, index) => (
-                    <article className="evidence-row" key={`${item.source}-${index}`}>
+              {latestResponse?.evidence?.length
+                ? latestResponse.evidence.map((source, index) => (
+                    <article className="evidence-row" key={`${source.source}-${index}`}>
                       <Icon name="file" />
                       <div>
-                        <strong>{item.source}</strong>
+                        <strong>{source.source}</strong>
                         <span>
-                          {evidencePageLabel(item.page)} · 匹配度 {formatScore(item.score)}
+                          {evidencePageLabel(source.page)} · 匹配度 {formatScore(source.score)}
                         </span>
-                        <p className="artifact-copy">{item.snippet}</p>
-                        {hasMetadata(item.metadata) ? (
-                          <pre className="json-snippet">{formatJson(item.metadata)}</pre>
+                        <p className="artifact-copy">{source.snippet}</p>
+                        {hasMetadata(source.metadata) ? (
+                          <pre className="json-snippet">{formatJson(source.metadata)}</pre>
                         ) : null}
                       </div>
                     </article>
                   ))
-                : evidenceItems.map((item) => (
-                    <article className="evidence-row" key={item.page}>
+                : displayedSources.map((source) => (
+                    <article className="evidence-row" key={`${source.doc}-${source.locator}`}>
                       <Icon name="file" />
                       <div>
-                        <strong>{item.title}</strong>
-                        <span>
-                          {item.page} · 匹配度 {item.confidence}
-                        </span>
+                        <strong>
+                          {source.doc} {source.locator}
+                        </strong>
+                        <span>{source.summary}</span>
+                        <small>相似度 / 置信度 {source.confidence}%</small>
                       </div>
                     </article>
                   ))}
->>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
             </div>
           </section>
         ) : null}
@@ -1299,106 +1214,113 @@ function App() {
         {activeTab === "log" ? (
           <section className="artifact-content">
             <div className="log-timeline">
-<<<<<<< HEAD
-              {config.logs.map((log) => (
-                <article key={log.title}>
-                  <Icon name="check" />
-                  <div>
-                    <strong>{log.title}</strong>
-                    <span>{log.detail}</span>
-                  </div>
-                </article>
-              ))}
-=======
-              {response?.trace_id ? (
+              {latestResponse?.trace_id ? (
                 <article>
                   <Icon name="check" />
                   <div>
                     <strong>Trace ID</strong>
-                    <span>{response.trace_id}</span>
+                    <span>{latestResponse.trace_id}</span>
                   </div>
                 </article>
               ) : null}
 
-              {response?.evaluation ? (
+              {latestResponse?.llm_model || latestResponse?.llm_usage ? (
+                <article>
+                  <Icon name="check" />
+                  <div>
+                    <strong>LLM 调用信息</strong>
+                    <span>{latestResponse.llm_model || "模型未返回"}</span>
+                    {latestResponse.llm_usage ? (
+                      <pre className="json-snippet">{formatJson(latestResponse.llm_usage)}</pre>
+                    ) : null}
+                  </div>
+                </article>
+              ) : null}
+
+              {latestResponse?.evaluation ? (
                 <article>
                   <Icon name="check" />
                   <div>
                     <strong>评估结果 · 可信度 {confidence}%</strong>
                     <span>
-                      安全：{response.evaluation.is_safe ? "通过" : "需复核"} · 合规：
-                      {response.evaluation.is_compliant ? "通过" : "需复核"}
+                      安全：{latestResponse.evaluation.is_safe ? "通过" : "需复核"} · 合规：
+                      {latestResponse.evaluation.is_compliant ? "通过" : "需复核"}
                     </span>
-                    {response.evaluation.issues.length ? (
+                    {latestResponse.evaluation.issues.length ? (
                       <p className="artifact-copy">
-                        风险提示：{response.evaluation.issues.join("；")}
+                        风险提示：{latestResponse.evaluation.issues.join("；")}
                       </p>
                     ) : null}
                   </div>
                 </article>
               ) : null}
 
-              {response?.tool_calls?.length ? (
-                response.tool_calls.map((call, index) => (
-                  <article key={`${call.tool_name}-${index}`}>
-                    <Icon name="check" />
-                    <div>
-                      <strong>{call.tool_name}</strong>
-                      <span>
-                        {call.status}
-                        {call.duration_ms !== null ? ` · ${call.duration_ms} ms` : ""}
-                      </span>
-                      <details>
-                        <summary>输入 / 输出</summary>
-                        <pre className="json-snippet">
-                          {`input:\n${formatJson(call.input)}\n\noutput:\n${formatJson(call.output)}`}
-                        </pre>
-                      </details>
-                    </div>
-                  </article>
-                ))
-              ) : (
-                <>
-                  <article>
-                    <Icon name="check" />
-                    <div>
-                      <strong>等待 Harness 调用</strong>
-                      <span>提交问题后会显示工具调用记录</span>
-                    </div>
-                  </article>
-                  <article>
-                    <Icon name="check" />
-                    <div>
-                      <strong>等待生成 trace</strong>
-                      <span>后端返回后会显示 trace_id</span>
-                    </div>
-                  </article>
-                </>
-              )}
+              {latestResponse?.tool_calls?.length
+                ? latestResponse.tool_calls.map((call, index) => (
+                    <article key={`${call.tool_name}-${index}`}>
+                      <Icon name="check" />
+                      <div>
+                        <strong>{call.tool_name}</strong>
+                        <span>
+                          {call.status}
+                          {call.duration_ms !== null ? ` · ${call.duration_ms} ms` : ""}
+                        </span>
+                        <details>
+                          <summary>输入 / 输出</summary>
+                          <pre className="json-snippet">
+                            {`input:\n${formatJson(call.input)}\n\noutput:\n${formatJson(call.output)}`}
+                          </pre>
+                        </details>
+                      </div>
+                    </article>
+                  ))
+                : displayedLogs.map((log) => (
+                    <article key={log.title}>
+                      <Icon name="check" />
+                      <div>
+                        <strong>{log.title}</strong>
+                        <span>{log.detail}</span>
+                      </div>
+                    </article>
+                  ))}
 
-              {response?.ai_coding ? (
+              {latestError ? (
+                <article>
+                  <Icon name="check" />
+                  <div>
+                    <strong>接口联调状态</strong>
+                    <span>{latestError}</span>
+                  </div>
+                </article>
+              ) : null}
+
+              {latestResponse?.ai_coding ? (
                 <article className="ai-coding-card">
                   <Icon name="file" />
                   <div>
-                    <strong>AI Coding · {response.ai_coding.language || "unknown"}</strong>
-                    {response.ai_coding.explanation ? (
-                      <span>{response.ai_coding.explanation}</span>
+                    <strong>AI Coding · {latestResponse.ai_coding.language || "unknown"}</strong>
+                    {latestResponse.ai_coding.explanation ? (
+                      <span>{latestResponse.ai_coding.explanation}</span>
                     ) : null}
-                    {response.ai_coding.script ? (
-                      <pre className="code-snippet">{response.ai_coding.script}</pre>
+                    {latestResponse.ai_coding.script ? (
+                      <pre className="code-snippet">{latestResponse.ai_coding.script}</pre>
                     ) : null}
-                    {response.ai_coding.sandbox_result ? (
+                    {latestResponse.ai_coding.warnings?.length ? (
+                      <p className="artifact-copy">
+                        提示：{latestResponse.ai_coding.warnings.join("；")}
+                      </p>
+                    ) : null}
+                    {latestResponse.ai_coding.sandbox_result ? (
                       <details open>
                         <summary>sandbox_result</summary>
                         <pre className="json-snippet">
-                          {formatJson(response.ai_coding.sandbox_result)}
+                          {formatJson(latestResponse.ai_coding.sandbox_result)}
                         </pre>
                       </details>
                     ) : null}
                   </div>
                 </article>
               ) : null}
->>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
             </div>
           </section>
         ) : null}

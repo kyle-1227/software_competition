@@ -479,7 +479,10 @@ textarea:focus-visible {
   line-height: 1.68;
 }
 
-<<<<<<< HEAD
+.assistant-error {
+  color: var(--brick);
+}
+
 .assistant-section-title {
   display: flex;
   align-items: center;
@@ -562,10 +565,6 @@ textarea:focus-visible {
 
 .rag-card strong {
   font-size: 13px;
-=======
-.assistant-error {
-  color: var(--brick);
->>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
 }
 
 .inline-evidence {
@@ -724,6 +723,11 @@ textarea:focus-visible {
   border-radius: 8px;
   color: #fffdf8;
   background: var(--ink);
+}
+
+.send-button:disabled {
+  cursor: wait;
+  opacity: 0.62;
 }
 
 .artifact-shell {
@@ -1010,20 +1014,6 @@ textarea:focus-visible {
   gap: 4px;
 }
 
-<<<<<<< HEAD
-.evidence-row small {
-  font-size: 12px;
-}
-
-.output-preview {
-  background: var(--surface-cool);
-}
-
-.output-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-=======
 .artifact-copy {
   margin: 0;
   color: var(--ink);
@@ -1061,7 +1051,20 @@ textarea:focus-visible {
 
 .ai-coding-card {
   align-items: flex-start;
->>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
+}
+
+.evidence-row small {
+  font-size: 12px;
+}
+
+.output-preview {
+  background: var(--surface-cool);
+}
+
+.output-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 @media (hover: hover) {
