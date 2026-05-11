@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { ChangeEvent, FormEvent, useRef, useState } from "react";
 
 type IconName =
   | "attach"
@@ -8,6 +8,7 @@ type IconName =
   | "clipboard"
   | "file"
   | "filter"
+  | "image"
   | "message"
   | "panel"
   | "plus"
@@ -17,18 +18,246 @@ type IconName =
   | "upload"
   | "wrench";
 
-type ArtifactTab = "sop" | "evidence" | "log";
+type SceneKey = "maintenance" | "education";
+type ArtifactTab = "path" | "evidence" | "log";
+type WorkflowStatus = "idle" | "analyzing" | "retrieving" | "completed";
+type FeedbackChoice = "accurate" | "inaccurate" | "supplement" | null;
 
-const conversations: Array<{
+type PromptCard = {
   title: string;
-  meta: string;
-  active?: boolean;
-}> = [
-  { title: "怠速不稳和回火排查", meta: "2分钟前", active: true },
-  { title: "机油压力灯异常", meta: "今天 14:20" },
-  { title: "冷车启动困难", meta: "昨天" },
-  { title: "气门间隙复检", meta: "周二" },
-];
+  detail: string;
+  prompt: string;
+  accent: "brick" | "sage" | "blue";
+};
+
+type SourceItem = {
+  doc: string;
+  locator: string;
+  summary: string;
+  confidence: number;
+};
+
+type SceneConfig = {
+  label: string;
+  badge: string;
+  title: string;
+  eyebrow: string;
+  modes: string[];
+  cards: PromptCard[];
+  recent: Array<{ title: string; meta: string; active?: boolean }>;
+  agents: string[];
+  steps: string[];
+  sources: SourceItem[];
+  profile: {
+    title: string;
+    rows: Array<{ label: string; value: string }>;
+  };
+  tabs: Record<ArtifactTab, string>;
+  inputPlaceholder: string;
+  uploadDocLabel: string;
+  uploadImageLabel: string;
+  citeLabel: string;
+  citeMockName: string;
+  answer: string;
+  artifactTitle: string;
+  confidence: number;
+  logs: Array<{ title: string; detail: string }>;
+  outputs: string[];
+  feedbackTitle: string;
+  feedbackSavedText: string;
+};
+
+type ThreadItem = {
+  id: number;
+  prompt: string;
+  answer: string;
+};
+
+type SelectedFile = {
+  id: number;
+  name: string;
+  kind: string;
+  status: string;
+};
+
+const sceneConfig: Record<SceneKey, SceneConfig> = {
+  maintenance: {
+    label: "设备检修助手",
+    badge: "Equipment Maintenance Agent",
+    title: "今天要排查哪类故障？",
+    eyebrow: "Multi-Agent Knowledge Assistant",
+    modes: ["诊断", "检索", "复核"],
+    cards: [
+      {
+        title: "怠速不稳",
+        detail: "生成排查顺序和证据页",
+        prompt: "热车后怠速不稳，排气管偶尔回火，应该先检查哪里？",
+        accent: "brick",
+      },
+      {
+        title: "启动困难",
+        detail: "定位燃油、点火、压缩链路",
+        prompt: "冷车启动困难，启动机转速正常但发动机不着车，请给出排查流程。",
+        accent: "sage",
+      },
+      {
+        title: "异常噪声",
+        detail: "按部件和工况拆解风险",
+        prompt: "发动机加速时有金属敲击声，请结合手册给出可能原因和安全检查项。",
+        accent: "blue",
+      },
+    ],
+    recent: [
+      { title: "怠速不稳和回火排查", meta: "2分钟前", active: true },
+      { title: "机油压力灯异常", meta: "今天 14:20" },
+      { title: "冷车启动困难", meta: "昨天" },
+      { title: "气门间隙复检", meta: "周二" },
+    ],
+    agents: ["故障诊断 Agent", "手册检索 Agent", "SOP 生成 Agent", "安全校验 Agent"],
+    steps: [
+      "确认故障现象和设备运行状态",
+      "检查相关管路、接口和关键部件",
+      "对照手册定位可能故障原因",
+      "生成标准化检修步骤",
+      "复检并记录检修结果",
+    ],
+    sources: [
+      {
+        doc: "《摩托车发动机维修手册》",
+        locator: "P.36",
+        summary: "怠速调整、混合气状态和进气密封检查的标准顺序。",
+        confidence: 91,
+      },
+      {
+        doc: "《摩托车发动机维修手册》",
+        locator: "P.58",
+        summary: "火花塞颜色、积碳和电极间隙可辅助判断点火弱化。",
+        confidence: 88,
+      },
+      {
+        doc: "《检修案例沉淀记录》",
+        locator: "Case 12",
+        summary: "同类回火现象最终定位为进气歧管接口轻微漏气。",
+        confidence: 84,
+      },
+    ],
+    profile: {
+      title: "当前设备",
+      rows: [
+        { label: "类型", value: "摩托车发动机" },
+        { label: "型号", value: "示例型号" },
+        { label: "故障等级", value: "中" },
+        { label: "检修等级", value: "二级" },
+      ],
+    },
+    tabs: { path: "SOP", evidence: "证据", log: "记录" },
+    inputPlaceholder: "请输入故障现象、设备型号，或上传检修手册/故障图片。",
+    uploadDocLabel: "上传检修手册",
+    uploadImageLabel: "上传故障图片",
+    citeLabel: "引用设备资料",
+    citeMockName: "摩托车发动机维修手册 · P.36",
+    answer:
+      "我会先按“进气漏气、点火弱、怠速调整偏差”三个方向缩小范围。目前证据更指向进气系统密封和火花塞状态，建议先完成外观与接口检查，再决定是否拆检总成。",
+    artifactTitle: "怠速不稳 SOP",
+    confidence: 91,
+    logs: [
+      { title: "已召回 12 个高相关片段", detail: "过滤低置信证据 5 条" },
+      { title: "已生成标准化检修步骤", detail: "等待维修员确认现场症状" },
+      { title: "已预留经验补充入口", detail: "可沉淀检修案例到反馈标注" },
+    ],
+    outputs: ["SOP", "检修报告", "故障分析记录"],
+    feedbackTitle: "经验补充 / 检修案例沉淀",
+    feedbackSavedText: "反馈已记录，待审核纳入知识库",
+  },
+  education: {
+    label: "个性化学习助手",
+    badge: "Personalized Learning Agent",
+    title: "今天想学习哪个知识点？",
+    eyebrow: "Multi-Agent Knowledge Assistant",
+    modes: ["画像", "讲解", "练习"],
+    cards: [
+      {
+        title: "知识点讲解",
+        detail: "拆解概念、公式与案例",
+        prompt: "请用适合计算机专业学生的方式讲解反向传播，并给出一个小例子。",
+        accent: "brick",
+      },
+      {
+        title: "练习题生成",
+        detail: "按目标难度生成题目和解析",
+        prompt: "围绕神经网络基础生成 5 道由易到难的练习题，并附参考答案。",
+        accent: "sage",
+      },
+      {
+        title: "学习路径规划",
+        detail: "结合基础水平安排学习顺序",
+        prompt: "我想在两周内掌握人工智能核心知识点，请生成个性化学习路径。",
+        accent: "blue",
+      },
+    ],
+    recent: [
+      { title: "反向传播知识点讲解", meta: "5分钟前", active: true },
+      { title: "线性代数基础练习", meta: "今天 13:40" },
+      { title: "机器学习学习路径", meta: "昨天" },
+      { title: "Python 实操案例生成", meta: "周一" },
+    ],
+    agents: ["画像分析 Agent", "知识讲解 Agent", "题目生成 Agent", "路径规划 Agent"],
+    steps: [
+      "识别当前知识基础",
+      "分析学习目标和薄弱知识点",
+      "推荐核心学习资料",
+      "生成练习题和实操案例",
+      "根据反馈调整学习路径",
+    ],
+    sources: [
+      {
+        doc: "《人工智能导论课件》",
+        locator: "Chapter 3",
+        summary: "神经网络结构、损失函数和反向传播的核心脉络。",
+        confidence: 88,
+      },
+      {
+        doc: "《神经网络基础讲义》",
+        locator: "P.12",
+        summary: "链式法则、梯度计算和参数更新的入门说明。",
+        confidence: 86,
+      },
+      {
+        doc: "《课程练习题库》",
+        locator: "Unit 2",
+        summary: "适合中等基础学生的概念题、计算题和编程题。",
+        confidence: 82,
+      },
+    ],
+    profile: {
+      title: "当前学习者",
+      rows: [
+        { label: "专业", value: "计算机" },
+        { label: "课程", value: "人工智能" },
+        { label: "基础水平", value: "中等" },
+        { label: "学习目标", value: "掌握核心知识点" },
+      ],
+    },
+    tabs: { path: "学习路径", evidence: "资料依据", log: "学习记录" },
+    inputPlaceholder: "请输入课程、知识点、学习目标，或上传课件/题目/学习资料。",
+    uploadDocLabel: "上传课件资料",
+    uploadImageLabel: "上传题目图片",
+    citeLabel: "引用课程知识库",
+    citeMockName: "人工智能导论课件 · Chapter 3",
+    answer:
+      "我会先识别你的基础水平和目标，再从课程资料中提取关键概念。当前更适合先把链式法则、损失函数和参数更新串起来，再进入反向传播的计算练习。",
+    artifactTitle: "反向传播学习路径",
+    confidence: 88,
+    logs: [
+      { title: "已召回 9 个课程片段", detail: "覆盖课件、讲义和题库" },
+      { title: "已生成分层学习路径", detail: "包含讲解、练习和复盘节点" },
+      { title: "已预留学习反馈入口", detail: "可用于内容修正和路径优化" },
+    ],
+    outputs: ["学习路径", "讲解文档", "练习题", "思维导图", "PPT 大纲"],
+    feedbackTitle: "学习反馈 / 内容修正",
+    feedbackSavedText: "反馈已保存，用于后续优化",
+  },
+};
 
 const navItems: Array<{
   icon: IconName;
@@ -36,50 +265,21 @@ const navItems: Array<{
   active?: boolean;
   count?: string;
 }> = [
-  { icon: "message", label: "对话", active: true, count: "12" },
-  { icon: "book", label: "手册库", count: "3" },
-  { icon: "clipboard", label: "工单" },
-  { icon: "panel", label: "Artifacts" },
+  { icon: "message", label: "智能对话", active: true, count: "12" },
+  { icon: "book", label: "知识库", count: "3" },
+  { icon: "clipboard", label: "任务流程" },
+  { icon: "panel", label: "生成成果" },
+  { icon: "check", label: "反馈标注" },
 ];
 
-const promptCards: Array<{
-  title: string;
-  detail: string;
-  prompt: string;
-  accent: string;
-}> = [
-  {
-    title: "怠速不稳",
-    detail: "生成检查顺序和证据页",
-    prompt: "热车后怠速不稳，排气管偶尔回火，应该先检查哪里？",
-    accent: "brick",
-  },
-  {
-    title: "启动困难",
-    detail: "定位燃油、点火、压缩链路",
-    prompt: "冷车启动困难，启动机转速正常但发动机不着车，请给出排查流程。",
-    accent: "sage",
-  },
-  {
-    title: "异常噪声",
-    detail: "按部件和工况拆解风险",
-    prompt: "发动机加速时有金属敲击声，请结合手册给出可能原因和安全检查项。",
-    accent: "blue",
-  },
-];
+const tabOrder: ArtifactTab[] = ["path", "evidence", "log"];
 
-const evidenceItems = [
-  { page: "P.36", title: "怠速调整与混合气检查", confidence: "92%" },
-  { page: "P.58", title: "火花塞颜色与点火弱化判断", confidence: "88%" },
-  { page: "P.74", title: "进气歧管漏气检查", confidence: "84%" },
-];
-
-const sopSteps = [
-  "确认怠速转速是否低于手册标准区间。",
-  "检查进气歧管、化油器接口和真空管是否漏气。",
-  "拆检火花塞，记录颜色、积碳和电极间隙。",
-  "复测点火正时，必要时调整混合气螺钉。",
-];
+const workflowLabels: Record<WorkflowStatus, string> = {
+  idle: "已完成",
+  analyzing: "分析中",
+  retrieving: "检索中",
+  completed: "已完成",
+};
 
 function Icon({ name }: { name: IconName }) {
   const props = {
@@ -143,6 +343,14 @@ function Icon({ name }: { name: IconName }) {
           <path d="M4 6h16" />
           <path d="M7 12h10" />
           <path d="M10 18h4" />
+        </svg>
+      );
+    case "image":
+      return (
+        <svg {...props}>
+          <rect x="4" y="5" width="16" height="14" rx="2" />
+          <circle cx="9" cy="10" r="1.5" />
+          <path d="m7 17 4.2-4.2a1.5 1.5 0 0 1 2.1 0L18 17" />
         </svg>
       );
     case "message":
@@ -213,18 +421,150 @@ function Icon({ name }: { name: IconName }) {
   }
 }
 
+function createInitialThread(config: SceneConfig): ThreadItem[] {
+  return [
+    {
+      id: Date.now(),
+      prompt: config.cards[0].prompt,
+      answer: config.answer,
+    },
+  ];
+}
+
+function getAgentState(
+  status: WorkflowStatus,
+  index: number,
+  total: number,
+): "done" | "active" | "pending" {
+  if (status === "completed" || status === "idle") {
+    return "done";
+  }
+
+  const activeIndex = status === "analyzing" ? 0 : Math.min(1, total - 1);
+
+  if (index < activeIndex) {
+    return "done";
+  }
+
+  if (index === activeIndex) {
+    return "active";
+  }
+
+  return "pending";
+}
+
 function App() {
-  const [draft, setDraft] = useState(promptCards[0].prompt);
-  const [submittedPrompt, setSubmittedPrompt] = useState(promptCards[0].prompt);
-  const [activeTab, setActiveTab] = useState<ArtifactTab>("sop");
+  const [scene, setScene] = useState<SceneKey>("maintenance");
+  const config = sceneConfig[scene];
+  const [draft, setDraft] = useState(config.cards[0].prompt);
+  const [thread, setThread] = useState<ThreadItem[]>(() => createInitialThread(config));
+  const [activeTab, setActiveTab] = useState<ArtifactTab>("path");
+  const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus>("completed");
+  const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([]);
+  const [feedbackChoice, setFeedbackChoice] = useState<FeedbackChoice>(null);
+  const [showCorrection, setShowCorrection] = useState(false);
+  const [correctionText, setCorrectionText] = useState("");
+  const [feedbackNotice, setFeedbackNotice] = useState("");
+  const docInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+
+  function resetFeedback() {
+    setFeedbackChoice(null);
+    setShowCorrection(false);
+    setCorrectionText("");
+    setFeedbackNotice("");
+  }
+
+  function handleSceneChange(nextScene: SceneKey) {
+    const nextConfig = sceneConfig[nextScene];
+
+    setScene(nextScene);
+    setDraft(nextConfig.cards[0].prompt);
+    setThread(createInitialThread(nextConfig));
+    setActiveTab("path");
+    setWorkflowStatus("completed");
+    setSelectedFiles([]);
+    resetFeedback();
+  }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextPrompt = draft.trim();
 
-    if (nextPrompt) {
-      setSubmittedPrompt(nextPrompt);
+    if (!nextPrompt) {
+      return;
     }
+
+    setThread((current) => [
+      ...current,
+      {
+        id: Date.now(),
+        prompt: nextPrompt,
+        answer: config.answer,
+      },
+    ]);
+    setWorkflowStatus("analyzing");
+    resetFeedback();
+
+    window.setTimeout(() => setWorkflowStatus("retrieving"), 450);
+    window.setTimeout(() => setWorkflowStatus("completed"), 900);
+  }
+
+  function handlePromptCardClick(card: PromptCard) {
+    setDraft(card.prompt);
+  }
+
+  function handleFileChange(
+    event: ChangeEvent<HTMLInputElement>,
+    kind: "资料" | "图片",
+  ) {
+    const files = Array.from(event.target.files ?? []);
+
+    if (!files.length) {
+      return;
+    }
+
+    setSelectedFiles((current) => [
+      ...current,
+      ...files.map((file) => ({
+        id: Date.now() + Math.random(),
+        name: file.name,
+        kind,
+        status: "待解析",
+      })),
+    ]);
+    event.target.value = "";
+  }
+
+  function handleCiteKnowledge() {
+    setSelectedFiles((current) => [
+      ...current,
+      {
+        id: Date.now(),
+        name: config.citeMockName,
+        kind: "知识库引用",
+        status: "已引用",
+      },
+    ]);
+  }
+
+  function handleFeedback(nextChoice: FeedbackChoice) {
+    setFeedbackChoice(nextChoice);
+    setFeedbackNotice("");
+
+    if (nextChoice === "accurate") {
+      setShowCorrection(false);
+      setFeedbackNotice(config.feedbackSavedText);
+      return;
+    }
+
+    setShowCorrection(true);
+  }
+
+  function handleCorrectionSubmit() {
+    setShowCorrection(false);
+    setCorrectionText("");
+    setFeedbackNotice(config.feedbackSavedText);
   }
 
   return (
@@ -232,22 +572,22 @@ function App() {
       <aside className="sidebar" aria-label="主导航">
         <div className="brand-row">
           <div className="brand-mark" aria-hidden="true">
-            M
+            智
           </div>
           <div className="brand-copy">
-            <span>Maintenance</span>
-            <strong>Agent</strong>
+            <span>多模态知识智能体平台</span>
+            <strong>智源 Agent</strong>
           </div>
         </div>
 
-        <button className="new-chat-button" type="button">
+        <button className="new-chat-button" type="button" onClick={() => handleSceneChange(scene)}>
           <Icon name="plus" />
           <span>新会话</span>
         </button>
 
         <label className="sidebar-search">
           <Icon name="search" />
-          <input aria-label="搜索" placeholder="搜索对话、手册、工单" />
+          <input aria-label="搜索" placeholder="搜索对话、知识库、任务流程" />
         </label>
 
         <nav className="nav-stack" aria-label="功能">
@@ -271,13 +611,14 @@ function App() {
               <Icon name="filter" />
             </button>
           </div>
-          {conversations.map((conversation) => (
+          {config.recent.map((conversation) => (
             <button
               className={`conversation-item${
                 conversation.active ? " is-active" : ""
               }`}
               key={conversation.title}
               type="button"
+              onClick={() => setDraft(conversation.title)}
             >
               <span>{conversation.title}</span>
               <small>{conversation.meta}</small>
@@ -290,8 +631,8 @@ function App() {
             L
           </div>
           <div>
-            <span>维修组</span>
-            <small>比赛演示环境</small>
+            <span>演示工作台</span>
+            <small>比赛通用前端底座</small>
           </div>
           <button aria-label="设置" className="icon-button" type="button">
             <Icon name="settings" />
@@ -301,30 +642,39 @@ function App() {
 
       <main className="chat-shell">
         <header className="chat-topbar">
-          <button className="project-chip" type="button">
-            <Icon name="wrench" />
-            <span>摩托车发动机维修</span>
-            <Icon name="chevron" />
-          </button>
+          <div className="scene-switch" aria-label="场景选择">
+            {(["maintenance", "education"] as SceneKey[]).map((sceneKey) => (
+              <button
+                className={scene === sceneKey ? "is-active" : ""}
+                key={sceneKey}
+                onClick={() => handleSceneChange(sceneKey)}
+                type="button"
+              >
+                {sceneConfig[sceneKey].label}
+              </button>
+            ))}
+          </div>
 
-          <div className="mode-switch" aria-label="模式">
-            <button className="is-active" type="button">
-              诊断
-            </button>
-            <button type="button">检索</button>
-            <button type="button">复核</button>
+          <div className="mode-switch" aria-label="工作模式">
+            {config.modes.map((mode, index) => (
+              <button className={index === 0 ? "is-active" : ""} key={mode} type="button">
+                {mode}
+              </button>
+            ))}
           </div>
         </header>
 
         <section className="welcome-block">
-          <p className="eyebrow">Equipment Maintenance Agent</p>
-          <h1>今天要排查哪类故障？</h1>
+          <p className="eyebrow">
+            {config.eyebrow} · {config.badge}
+          </p>
+          <h1>{config.title}</h1>
           <div className="prompt-grid">
-            {promptCards.map((card) => (
+            {config.cards.map((card) => (
               <button
                 className={`prompt-card accent-${card.accent}`}
                 key={card.title}
-                onClick={() => setDraft(card.prompt)}
+                onClick={() => handlePromptCardClick(card)}
                 type="button"
               >
                 <span>{card.title}</span>
@@ -335,52 +685,201 @@ function App() {
         </section>
 
         <section className="thread" aria-label="对话内容">
-          <article className="message-row is-user">
-            <div className="message-bubble">{submittedPrompt}</div>
-          </article>
+          {thread.map((item, index) => {
+            const isLatest = index === thread.length - 1;
 
-          <article className="message-row is-assistant">
-            <div className="assistant-avatar" aria-hidden="true">
-              A
-            </div>
-            <div className="assistant-message">
-              <p>
-                我会先按“进气漏气、点火弱、怠速调整偏差”三个方向缩小范围。
-                目前证据更指向进气系统密封和火花塞状态，建议不要先拆化油器总成。
-              </p>
-              <div className="inline-evidence">
-                {evidenceItems.slice(0, 2).map((item) => (
-                  <button key={item.page} type="button">
-                    <Icon name="file" />
-                    <span>{item.page}</span>
-                  </button>
-                ))}
+            return (
+              <div className="thread-exchange" key={item.id}>
+                <article className="message-row is-user">
+                  <div className="message-bubble">{item.prompt}</div>
+                </article>
+
+                <article className="message-row is-assistant">
+                  <div className="assistant-avatar" aria-hidden="true">
+                    A
+                  </div>
+                  <div className="assistant-message">
+                    <div className="agent-flow">
+                      <div className="assistant-section-title">
+                        <span>智能体协作流程</span>
+                        <small>{isLatest ? workflowLabels[workflowStatus] : "已完成"}</small>
+                      </div>
+                      <div className="agent-steps">
+                        {config.agents.map((agent, agentIndex) => {
+                          const state = isLatest
+                            ? getAgentState(workflowStatus, agentIndex, config.agents.length)
+                            : "done";
+
+                          return (
+                            <span className={`agent-step is-${state}`} key={agent}>
+                              {agent}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <p>{item.answer}</p>
+
+                    <div className="rag-preview">
+                      <div className="assistant-section-title">
+                        <span>RAG 来源依据</span>
+                        <small>Mock 检索结果</small>
+                      </div>
+                      <div className="rag-cards">
+                        {config.sources.slice(0, 2).map((source) => (
+                          <article className="rag-card" key={`${source.doc}-${source.locator}`}>
+                            <strong>
+                              {source.doc} {source.locator}
+                            </strong>
+                            <span>{source.summary}</span>
+                            <small>置信度 {source.confidence}%</small>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="inline-evidence">
+                      {config.sources.slice(0, 2).map((item) => (
+                        <button key={`${item.doc}-${item.locator}`} type="button">
+                          <Icon name="file" />
+                          <span>{item.locator}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    {isLatest ? (
+                      <div className="feedback-box">
+                        <div className="assistant-section-title">
+                          <span>{config.feedbackTitle}</span>
+                          <small>反馈标注</small>
+                        </div>
+                        <div className="feedback-actions">
+                          <button
+                            className={feedbackChoice === "accurate" ? "is-active" : ""}
+                            onClick={() => handleFeedback("accurate")}
+                            type="button"
+                          >
+                            准确
+                          </button>
+                          <button
+                            className={feedbackChoice === "inaccurate" ? "is-active" : ""}
+                            onClick={() => handleFeedback("inaccurate")}
+                            type="button"
+                          >
+                            不准确
+                          </button>
+                          <button
+                            className={feedbackChoice === "supplement" ? "is-active" : ""}
+                            onClick={() => handleFeedback("supplement")}
+                            type="button"
+                          >
+                            需要补充
+                          </button>
+                          <button onClick={() => setShowCorrection(true)} type="button">
+                            提交修正
+                          </button>
+                        </div>
+
+                        {showCorrection ? (
+                          <div className="correction-panel">
+                            <textarea
+                              aria-label="反馈修正"
+                              onChange={(event) => setCorrectionText(event.target.value)}
+                              placeholder="请输入正确答案、补充说明或经验记录"
+                              rows={3}
+                              value={correctionText}
+                            />
+                            <button onClick={handleCorrectionSubmit} type="button">
+                              提交反馈
+                            </button>
+                          </div>
+                        ) : null}
+
+                        {feedbackNotice ? (
+                          <p className="feedback-notice">{feedbackNotice}</p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </article>
               </div>
-            </div>
-          </article>
+            );
+          })}
         </section>
 
         <form className="composer" onSubmit={handleSubmit}>
+          <input
+            accept=".pdf,.doc,.docx,.ppt,.pptx,.txt,.md"
+            aria-label={config.uploadDocLabel}
+            hidden
+            multiple
+            onChange={(event) => handleFileChange(event, "资料")}
+            ref={docInputRef}
+            type="file"
+          />
+          <input
+            accept="image/*"
+            aria-label={config.uploadImageLabel}
+            hidden
+            multiple
+            onChange={(event) => handleFileChange(event, "图片")}
+            ref={imageInputRef}
+            type="file"
+          />
+
           <div className="composer-input">
-            <button aria-label="添加附件" className="icon-button" type="button">
+            <button
+              aria-label="添加资料"
+              className="icon-button"
+              onClick={() => docInputRef.current?.click()}
+              type="button"
+            >
               <Icon name="attach" />
             </button>
             <textarea
-              aria-label="输入故障描述"
+              aria-label="输入问题"
               onChange={(event) => setDraft(event.target.value)}
-              placeholder="描述故障现象，或粘贴检修记录..."
+              placeholder={config.inputPlaceholder}
               rows={1}
               value={draft}
             />
           </div>
+
+          {selectedFiles.length ? (
+            <div className="file-chip-list" aria-label="已选择资料">
+              {selectedFiles.map((file) => (
+                <span className="file-chip" key={file.id}>
+                  <Icon name={file.kind === "图片" ? "image" : "file"} />
+                  <strong>{file.name}</strong>
+                  <small>
+                    {file.kind} · {file.status}
+                  </small>
+                </span>
+              ))}
+            </div>
+          ) : null}
+
           <div className="composer-actions">
-            <button className="tool-button" type="button">
+            <button
+              className="tool-button"
+              onClick={() => docInputRef.current?.click()}
+              type="button"
+            >
               <Icon name="upload" />
-              <span>上传手册</span>
+              <span>{config.uploadDocLabel}</span>
             </button>
-            <button className="tool-button" type="button">
+            <button
+              className="tool-button"
+              onClick={() => imageInputRef.current?.click()}
+              type="button"
+            >
+              <Icon name="image" />
+              <span>{config.uploadImageLabel}</span>
+            </button>
+            <button className="tool-button" onClick={handleCiteKnowledge} type="button">
               <Icon name="book" />
-              <span>引用资料</span>
+              <span>{config.citeLabel}</span>
             </button>
             <button aria-label="发送" className="send-button" type="submit">
               <Icon name="send" />
@@ -389,19 +888,34 @@ function App() {
         </form>
       </main>
 
-      <aside className="artifact-shell" aria-label="维修工作区">
+      <aside className="artifact-shell" aria-label="智能体工作区">
         <header className="artifact-header">
           <div>
             <p>Artifact</p>
-            <h2>怠速不稳 SOP</h2>
+            <h2>{config.artifactTitle}</h2>
           </div>
           <button aria-label="展开工作区" className="icon-button" type="button">
             <Icon name="panel" />
           </button>
         </header>
 
+        <section className="profile-card" aria-label={config.profile.title}>
+          <div className="profile-card-title">
+            <span>当前对象</span>
+            <strong>{config.profile.title}</strong>
+          </div>
+          <dl>
+            {config.profile.rows.map((row) => (
+              <div key={row.label}>
+                <dt>{row.label}</dt>
+                <dd>{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+
         <div className="artifact-tabs" role="tablist" aria-label="工作区视图">
-          {(["sop", "evidence", "log"] as ArtifactTab[]).map((tab) => (
+          {tabOrder.map((tab) => (
             <button
               aria-selected={activeTab === tab}
               className={activeTab === tab ? "is-active" : ""}
@@ -410,12 +924,12 @@ function App() {
               role="tab"
               type="button"
             >
-              {tab === "sop" ? "SOP" : tab === "evidence" ? "证据" : "记录"}
+              {config.tabs[tab]}
             </button>
           ))}
         </div>
 
-        {activeTab === "sop" ? (
+        {activeTab === "path" ? (
           <section className="artifact-content">
             <div className="manual-visual" aria-hidden="true">
               <div className="manual-page">
@@ -434,34 +948,49 @@ function App() {
 
             <div className="risk-strip">
               <span>可信度</span>
-              <strong>91%</strong>
+              <strong>{config.confidence}%</strong>
               <div className="confidence-track">
-                <i />
+                <i style={{ width: `${config.confidence}%` }} />
               </div>
             </div>
 
             <ol className="sop-list">
-              {sopSteps.map((step, index) => (
+              {config.steps.map((step, index) => (
                 <li key={step}>
                   <span>{index + 1}</span>
                   <p>{step}</p>
                 </li>
               ))}
             </ol>
+
+            <section className="output-preview" aria-labelledby="output-preview-title">
+              <div className="assistant-section-title">
+                <span id="output-preview-title">生成成果</span>
+                <small>示例入口</small>
+              </div>
+              <div className="output-tags">
+                {config.outputs.map((output) => (
+                  <button key={output} type="button">
+                    {output}
+                  </button>
+                ))}
+              </div>
+            </section>
           </section>
         ) : null}
 
         {activeTab === "evidence" ? (
           <section className="artifact-content">
             <div className="evidence-stack">
-              {evidenceItems.map((item) => (
-                <article className="evidence-row" key={item.page}>
+              {config.sources.map((item) => (
+                <article className="evidence-row" key={`${item.doc}-${item.locator}`}>
                   <Icon name="file" />
                   <div>
-                    <strong>{item.title}</strong>
-                    <span>
-                      {item.page} · 匹配度 {item.confidence}
-                    </span>
+                    <strong>
+                      {item.doc} {item.locator}
+                    </strong>
+                    <span>{item.summary}</span>
+                    <small>相似度 / 置信度 {item.confidence}%</small>
                   </div>
                 </article>
               ))}
@@ -472,20 +1001,15 @@ function App() {
         {activeTab === "log" ? (
           <section className="artifact-content">
             <div className="log-timeline">
-              <article>
-                <Icon name="check" />
-                <div>
-                  <strong>已召回 12 个片段</strong>
-                  <span>过滤低置信证据 5 条</span>
-                </div>
-              </article>
-              <article>
-                <Icon name="check" />
-                <div>
-                  <strong>已生成排查顺序</strong>
-                  <span>等待维修员确认现场症状</span>
-                </div>
-              </article>
+              {config.logs.map((log) => (
+                <article key={log.title}>
+                  <Icon name="check" />
+                  <div>
+                    <strong>{log.title}</strong>
+                    <span>{log.detail}</span>
+                  </div>
+                </article>
+              ))}
             </div>
           </section>
         ) : null}
