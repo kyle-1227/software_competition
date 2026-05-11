@@ -1,7 +1,48 @@
+import sys
+from types import ModuleType, SimpleNamespace
+
 import pytest
 
 from app.schemas.query import QueryRequest, QueryResponse
 from app.services.agent_harness_lc import AgentHarness
+from app.services.graph import graph_builder
+from app.services.graph.state import HarnessState
+
+
+def test_langgraph_uses_harness_state_schema(monkeypatch) -> None:
+    captured = {}
+
+    class FakeStateGraph:
+        def __init__(self, state_schema):
+            captured["state_schema"] = state_schema
+
+        def add_node(self, *args, **kwargs):
+            pass
+
+        def set_entry_point(self, *args, **kwargs):
+            pass
+
+        def add_edge(self, *args, **kwargs):
+            pass
+
+        def add_conditional_edges(self, *args, **kwargs):
+            pass
+
+        def compile(self, *args, **kwargs):
+            return self
+
+    fake_langgraph = ModuleType("langgraph")
+    fake_graph = ModuleType("langgraph.graph")
+    fake_graph.END = "__end__"
+    fake_graph.StateGraph = FakeStateGraph
+    fake_langgraph.graph = fake_graph
+    monkeypatch.setitem(sys.modules, "langgraph", fake_langgraph)
+    monkeypatch.setitem(sys.modules, "langgraph.graph", fake_graph)
+    monkeypatch.setattr(graph_builder, "_build_checkpointer", lambda: (None, None))
+
+    graph_builder.build_harness_graph(SimpleNamespace(warnings=[]))
+
+    assert captured["state_schema"] is HarnessState
 
 
 @pytest.mark.anyio

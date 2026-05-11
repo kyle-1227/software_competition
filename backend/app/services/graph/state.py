@@ -6,7 +6,7 @@ class HarnessState(TypedDict, total=False):
     device_name: str | None
     device_model: str | None
     session_id: str
-    trace_id: str
+    trace_id: str | None
     memory: list[dict[str, Any]]
     plan: list[dict[str, Any]]
     evidence: list[dict[str, Any]]

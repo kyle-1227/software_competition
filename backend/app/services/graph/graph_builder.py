@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from app.schemas.query import QueryResponse
+from app.services.graph.state import HarnessState
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ def build_harness_graph(services) -> Any:
         logger.warning("LangGraph unavailable, using fallback runner: %s", exc)
         return _build_fallback_graph(services)
 
-    graph = StateGraph(dict)
+    graph = StateGraph(HarnessState)
     nodes = _build_nodes(services)
     graph.add_node("intake_node", nodes["intake_node"])
     graph.add_node("memory_load_node", nodes["memory_load_node"])
@@ -66,6 +67,9 @@ def _build_nodes(services) -> dict[str, Any]:
             or "default"
         )
         return {
+            "question": state["question"],
+            "device_name": state.get("device_name"),
+            "device_model": state.get("device_model"),
             "session_id": session_id,
             "trace_id": state.get("trace_id") or _trace_placeholder(session_id),
             "errors": [],
