@@ -18,13 +18,86 @@ type IconName =
   | "wrench";
 
 type ArtifactTab = "sop" | "evidence" | "log";
+type JsonMap = Record<string, unknown>;
+
+interface ApiEnvelope<T> {
+  success: boolean;
+  data: T | null;
+  error: {
+    code: string;
+    message: string;
+    details?: unknown;
+  } | null;
+  trace_id: string;
+}
+
+interface EvidenceItem {
+  source: string;
+  page: number | null;
+  snippet: string;
+  score: number | null;
+  metadata: JsonMap;
+}
+
+interface PlanStep {
+  step: string;
+  status: string;
+}
+
+interface ToolCallItem {
+  tool_name: string;
+  input: JsonMap;
+  output: JsonMap | JsonMap[] | string | null;
+  status: string;
+  duration_ms: number | null;
+}
+
+interface EvaluationResult {
+  is_safe: boolean;
+  is_compliant: boolean;
+  confidence: number;
+  issues: string[];
+}
+
+interface SandboxResult {
+  language: string;
+  allowed: boolean;
+  return_code: number | null;
+  stdout: string;
+  stderr: string;
+  error: string | null;
+  duration_ms: number | null;
+}
+
+interface AICodingResult {
+  language?: string;
+  script?: string;
+  explanation?: string;
+  warnings?: string[];
+  sandbox_result?: SandboxResult | JsonMap | null;
+  [key: string]: unknown;
+}
+
+interface QueryResponse {
+  answer: string;
+  plan: PlanStep[];
+  evidence: EvidenceItem[];
+  tool_calls: ToolCallItem[];
+  evaluation: EvaluationResult | null;
+  trace_id: string | null;
+  sop: string[];
+  memory: JsonMap[];
+  ai_coding: AICodingResult | null;
+  llm_usage: JsonMap | null;
+  llm_model: string | null;
+}
 
 const conversations: Array<{
   title: string;
   meta: string;
   active?: boolean;
 }> = [
-  { title: "怠速不稳和回火排查", meta: "2分钟前", active: true },
+  { title: "怠速不稳和回火排查", meta: "2 分钟前", active: true },
   { title: "机油压力灯异常", meta: "今天 14:20" },
   { title: "冷车启动困难", meta: "昨天" },
   { title: "气门间隙复检", meta: "周二" },
@@ -61,9 +134,9 @@ const promptCards: Array<{
     accent: "sage",
   },
   {
-    title: "异常噪声",
-    detail: "按部件和工况拆解风险",
-    prompt: "发动机加速时有金属敲击声，请结合手册给出可能原因和安全检查项。",
+    title: "生成脚本",
+    detail: "调用 AI Coding 和沙箱",
+    prompt: "生成 SQL 脚本检查诊断记录",
     accent: "blue",
   },
 ];
@@ -80,6 +153,9 @@ const sopSteps = [
   "拆检火花塞，记录颜色、积碳和电极间隙。",
   "复测点火正时，必要时调整混合气螺钉。",
 ];
+
+const fallbackAssistantText =
+  "我会先按进气漏气、点火偏弱、怠速调整偏差三个方向缩小范围。目前证据更指向进气系统密封和火花塞状态，建议不要先拆化油器总成。";
 
 function Icon({ name }: { name: IconName }) {
   const props = {
@@ -213,17 +289,102 @@ function Icon({ name }: { name: IconName }) {
   }
 }
 
+function formatJson(value: unknown) {
+  if (value === null || value === undefined) {
+    return "null";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function formatConfidence(confidence?: number | null) {
+  if (typeof confidence !== "number" || Number.isNaN(confidence)) {
+    return 91;
+  }
+
+  const normalized = confidence <= 1 ? confidence * 100 : confidence;
+  return Math.max(0, Math.min(100, Math.round(normalized)));
+}
+
+function formatScore(score?: number | null) {
+  if (typeof score !== "number" || Number.isNaN(score)) {
+    return "未知";
+  }
+
+  const normalized = score <= 1 ? score * 100 : score;
+  return `${Math.round(normalized)}%`;
+}
+
+function evidencePageLabel(page?: number | null) {
+  return page === null || page === undefined ? "P.-" : `P.${page}`;
+}
+
+function hasMetadata(metadata: JsonMap) {
+  return Object.keys(metadata).length > 0;
+}
+
 function App() {
   const [draft, setDraft] = useState(promptCards[0].prompt);
   const [submittedPrompt, setSubmittedPrompt] = useState(promptCards[0].prompt);
   const [activeTab, setActiveTab] = useState<ArtifactTab>("sop");
+  const [response, setResponse] = useState<QueryResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  const confidence = formatConfidence(response?.evaluation?.confidence);
+  const displayedSop = response?.sop?.length ? response.sop : sopSteps;
+  const assistantText = loading
+    ? "正在调用 Harness..."
+    : error
+      ? error
+      : response?.answer || fallbackAssistantText;
+  const inlineEvidence = response?.evidence?.length
+    ? response.evidence.slice(0, 2)
+    : null;
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextPrompt = draft.trim();
 
-    if (nextPrompt) {
-      setSubmittedPrompt(nextPrompt);
+    if (!nextPrompt || loading) {
+      return;
+    }
+
+    setSubmittedPrompt(nextPrompt);
+    setError(null);
+    setLoading(true);
+
+    try {
+      const httpResponse = await fetch("/api/query", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          question: nextPrompt,
+          device_name: "摩托车发动机",
+          session_id: "demo-session",
+        }),
+      });
+      const envelope = (await httpResponse.json()) as ApiEnvelope<QueryResponse>;
+
+      if (!httpResponse.ok || !envelope.success || !envelope.data) {
+        throw new Error(envelope.error?.message || `请求失败：${httpResponse.status}`);
+      }
+
+      setResponse(envelope.data);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "调用 Harness 失败");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -344,17 +505,21 @@ function App() {
               A
             </div>
             <div className="assistant-message">
-              <p>
-                我会先按“进气漏气、点火弱、怠速调整偏差”三个方向缩小范围。
-                目前证据更指向进气系统密封和火花塞状态，建议不要先拆化油器总成。
-              </p>
+              <p className={error ? "assistant-error" : undefined}>{assistantText}</p>
               <div className="inline-evidence">
-                {evidenceItems.slice(0, 2).map((item) => (
-                  <button key={item.page} type="button">
-                    <Icon name="file" />
-                    <span>{item.page}</span>
-                  </button>
-                ))}
+                {inlineEvidence
+                  ? inlineEvidence.map((item, index) => (
+                      <button key={`${item.source}-${index}`} type="button">
+                        <Icon name="file" />
+                        <span>{evidencePageLabel(item.page)}</span>
+                      </button>
+                    ))
+                  : evidenceItems.slice(0, 2).map((item) => (
+                      <button key={item.page} type="button">
+                        <Icon name="file" />
+                        <span>{item.page}</span>
+                      </button>
+                    ))}
               </div>
             </div>
           </article>
@@ -382,7 +547,12 @@ function App() {
               <Icon name="book" />
               <span>引用资料</span>
             </button>
-            <button aria-label="发送" className="send-button" type="submit">
+            <button
+              aria-label="发送"
+              className="send-button"
+              disabled={loading}
+              type="submit"
+            >
               <Icon name="send" />
             </button>
           </div>
@@ -393,7 +563,7 @@ function App() {
         <header className="artifact-header">
           <div>
             <p>Artifact</p>
-            <h2>怠速不稳 SOP</h2>
+            <h2>{response?.ai_coding ? "AI Coding 记录" : "维修 SOP"}</h2>
           </div>
           <button aria-label="展开工作区" className="icon-button" type="button">
             <Icon name="panel" />
@@ -434,15 +604,24 @@ function App() {
 
             <div className="risk-strip">
               <span>可信度</span>
-              <strong>91%</strong>
+              <strong>{confidence}%</strong>
               <div className="confidence-track">
-                <i />
+                <i style={{ width: `${confidence}%` }} />
               </div>
             </div>
 
+            {response?.evaluation?.issues?.length ? (
+              <div className="risk-issues">
+                <strong>风险提示</strong>
+                {response.evaluation.issues.map((issue) => (
+                  <span key={issue}>{issue}</span>
+                ))}
+              </div>
+            ) : null}
+
             <ol className="sop-list">
-              {sopSteps.map((step, index) => (
-                <li key={step}>
+              {displayedSop.map((step, index) => (
+                <li key={`${step}-${index}`}>
                   <span>{index + 1}</span>
                   <p>{step}</p>
                 </li>
@@ -454,17 +633,33 @@ function App() {
         {activeTab === "evidence" ? (
           <section className="artifact-content">
             <div className="evidence-stack">
-              {evidenceItems.map((item) => (
-                <article className="evidence-row" key={item.page}>
-                  <Icon name="file" />
-                  <div>
-                    <strong>{item.title}</strong>
-                    <span>
-                      {item.page} · 匹配度 {item.confidence}
-                    </span>
-                  </div>
-                </article>
-              ))}
+              {response?.evidence?.length
+                ? response.evidence.map((item, index) => (
+                    <article className="evidence-row" key={`${item.source}-${index}`}>
+                      <Icon name="file" />
+                      <div>
+                        <strong>{item.source}</strong>
+                        <span>
+                          {evidencePageLabel(item.page)} · 匹配度 {formatScore(item.score)}
+                        </span>
+                        <p className="artifact-copy">{item.snippet}</p>
+                        {hasMetadata(item.metadata) ? (
+                          <pre className="json-snippet">{formatJson(item.metadata)}</pre>
+                        ) : null}
+                      </div>
+                    </article>
+                  ))
+                : evidenceItems.map((item) => (
+                    <article className="evidence-row" key={item.page}>
+                      <Icon name="file" />
+                      <div>
+                        <strong>{item.title}</strong>
+                        <span>
+                          {item.page} · 匹配度 {item.confidence}
+                        </span>
+                      </div>
+                    </article>
+                  ))}
             </div>
           </section>
         ) : null}
@@ -472,20 +667,94 @@ function App() {
         {activeTab === "log" ? (
           <section className="artifact-content">
             <div className="log-timeline">
-              <article>
-                <Icon name="check" />
-                <div>
-                  <strong>已召回 12 个片段</strong>
-                  <span>过滤低置信证据 5 条</span>
-                </div>
-              </article>
-              <article>
-                <Icon name="check" />
-                <div>
-                  <strong>已生成排查顺序</strong>
-                  <span>等待维修员确认现场症状</span>
-                </div>
-              </article>
+              {response?.trace_id ? (
+                <article>
+                  <Icon name="check" />
+                  <div>
+                    <strong>Trace ID</strong>
+                    <span>{response.trace_id}</span>
+                  </div>
+                </article>
+              ) : null}
+
+              {response?.evaluation ? (
+                <article>
+                  <Icon name="check" />
+                  <div>
+                    <strong>评估结果 · 可信度 {confidence}%</strong>
+                    <span>
+                      安全：{response.evaluation.is_safe ? "通过" : "需复核"} · 合规：
+                      {response.evaluation.is_compliant ? "通过" : "需复核"}
+                    </span>
+                    {response.evaluation.issues.length ? (
+                      <p className="artifact-copy">
+                        风险提示：{response.evaluation.issues.join("；")}
+                      </p>
+                    ) : null}
+                  </div>
+                </article>
+              ) : null}
+
+              {response?.tool_calls?.length ? (
+                response.tool_calls.map((call, index) => (
+                  <article key={`${call.tool_name}-${index}`}>
+                    <Icon name="check" />
+                    <div>
+                      <strong>{call.tool_name}</strong>
+                      <span>
+                        {call.status}
+                        {call.duration_ms !== null ? ` · ${call.duration_ms} ms` : ""}
+                      </span>
+                      <details>
+                        <summary>输入 / 输出</summary>
+                        <pre className="json-snippet">
+                          {`input:\n${formatJson(call.input)}\n\noutput:\n${formatJson(call.output)}`}
+                        </pre>
+                      </details>
+                    </div>
+                  </article>
+                ))
+              ) : (
+                <>
+                  <article>
+                    <Icon name="check" />
+                    <div>
+                      <strong>等待 Harness 调用</strong>
+                      <span>提交问题后会显示工具调用记录</span>
+                    </div>
+                  </article>
+                  <article>
+                    <Icon name="check" />
+                    <div>
+                      <strong>等待生成 trace</strong>
+                      <span>后端返回后会显示 trace_id</span>
+                    </div>
+                  </article>
+                </>
+              )}
+
+              {response?.ai_coding ? (
+                <article className="ai-coding-card">
+                  <Icon name="file" />
+                  <div>
+                    <strong>AI Coding · {response.ai_coding.language || "unknown"}</strong>
+                    {response.ai_coding.explanation ? (
+                      <span>{response.ai_coding.explanation}</span>
+                    ) : null}
+                    {response.ai_coding.script ? (
+                      <pre className="code-snippet">{response.ai_coding.script}</pre>
+                    ) : null}
+                    {response.ai_coding.sandbox_result ? (
+                      <details open>
+                        <summary>sandbox_result</summary>
+                        <pre className="json-snippet">
+                          {formatJson(response.ai_coding.sandbox_result)}
+                        </pre>
+                      </details>
+                    ) : null}
+                  </div>
+                </article>
+              ) : null}
             </div>
           </section>
         ) : null}

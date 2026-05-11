@@ -450,6 +450,10 @@ textarea:focus-visible {
   line-height: 1.68;
 }
 
+.assistant-error {
+  color: var(--brick);
+}
+
 .inline-evidence {
   display: flex;
   flex-wrap: wrap;
@@ -666,6 +670,22 @@ textarea:focus-visible {
   color: var(--sage);
 }
 
+.risk-issues {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(173, 81, 66, 0.26);
+  border-radius: 8px;
+  color: var(--brick);
+  background: var(--brick-soft);
+}
+
+.risk-issues span {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .confidence-track {
   flex: 1;
   height: 8px;
@@ -744,6 +764,45 @@ textarea:focus-visible {
   display: grid;
   min-width: 0;
   gap: 4px;
+}
+
+.artifact-copy {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.log-timeline details {
+  min-width: 0;
+}
+
+.log-timeline summary {
+  color: var(--blue);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.json-snippet,
+.code-snippet {
+  max-width: 100%;
+  max-height: 220px;
+  margin: 6px 0 0;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--surface-soft);
+  font-family: "Cascadia Mono", Consolas, "SFMono-Regular", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ai-coding-card {
+  align-items: flex-start;
 }
 
 @media (hover: hover) {
