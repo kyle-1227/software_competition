@@ -14,6 +14,14 @@ class Settings(BaseSettings):
         "http://127.0.0.1:8001",
     ]
     data_dir: str = "../data"
+    deepseek_api_key: str | None = None
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-v4-pro"
+    deepseek_thinking_enabled: bool = True
+    deepseek_reasoning_effort: str = "high"
+    deepseek_temperature: float = 0.2
+    deepseek_max_tokens: int = 2048
+    run_live_llm_tests: bool = False
 
     model_config = SettingsConfigDict(
         env_file=".env",

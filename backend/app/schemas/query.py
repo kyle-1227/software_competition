@@ -11,6 +11,7 @@ class QueryRequest(BaseModel):
     question: NonEmptyStr = Field(description="故障问题或任务请求。")
     device_name: str | None = None
     device_model: str | None = None
+    session_id: str | None = None
 
 
 class EvidenceItem(BaseModel):
@@ -61,3 +62,5 @@ class QueryResponse(BaseModel):
     sop: list[str] = Field(default_factory=list)
     memory: list[dict[str, Any]] = Field(default_factory=list)
     ai_coding: dict[str, Any] | None = None
+    llm_usage: dict[str, Any] | None = None
+    llm_model: str | None = None

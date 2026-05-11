@@ -1,8 +1,12 @@
+import ast
+import hashlib
+import io
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from app.schemas.query import SandboxResult
@@ -38,6 +42,55 @@ class SandboxExecutor:
         "> c:\\",
         "> C:\\",
     )
+    _blocked_names = {
+        "__import__",
+        "open",
+        "exec",
+        "eval",
+        "compile",
+        "input",
+        "globals",
+        "locals",
+        "getattr",
+        "setattr",
+        "os",
+        "sys",
+        "subprocess",
+        "socket",
+        "shutil",
+        "pathlib",
+        "requests",
+        "urllib",
+        "multiprocessing",
+        "threading",
+        "ctypes",
+        "pickle",
+        "system",
+        "popen",
+        "remove",
+        "unlink",
+    }
+    _allowed_builtins = {
+        "print": print,
+        "len": len,
+        "range": range,
+        "sum": sum,
+        "min": min,
+        "max": max,
+        "abs": abs,
+        "round": round,
+        "sorted": sorted,
+        "enumerate": enumerate,
+        "zip": zip,
+        "str": str,
+        "int": int,
+        "float": float,
+        "bool": bool,
+        "list": list,
+        "dict": dict,
+        "set": set,
+        "tuple": tuple,
+    }
 
     def __init__(self, timeout_seconds: int = 3) -> None:
         self.timeout_seconds = timeout_seconds
@@ -45,6 +98,20 @@ class SandboxExecutor:
     def execute(self, script: str, language: str) -> SandboxResult:
         normalized = language.lower().strip()
         started = time.perf_counter()
+        if len(script) > 8000:
+            return SandboxResult(
+                language=normalized,
+                allowed=False,
+                error="脚本过长，已拒绝执行。",
+                duration_ms=self._elapsed_ms(started),
+            )
+        if normalized == "shell":
+            return SandboxResult(
+                language=normalized,
+                allowed=False,
+                error="Shell 默认拒绝执行。",
+                duration_ms=self._elapsed_ms(started),
+            )
         allowed, reason = self._is_allowed(script)
         if not allowed:
             return SandboxResult(
@@ -58,8 +125,6 @@ class SandboxExecutor:
             return self._execute_python(script, started)
         if normalized == "sql":
             return self._execute_sql(script, started)
-        if normalized == "shell":
-            return self._execute_shell(script, started)
 
         return SandboxResult(
             language=normalized,
@@ -69,30 +134,27 @@ class SandboxExecutor:
         )
 
     def _execute_python(self, script: str, started: float) -> SandboxResult:
+        ast_result = self._validate_python_ast(script)
+        if ast_result is not None:
+            return SandboxResult(
+                language="python",
+                allowed=False,
+                error=ast_result,
+                duration_ms=self._elapsed_ms(started),
+            )
         with tempfile.TemporaryDirectory() as tmpdir:
             script_path = Path(tmpdir) / "script.py"
             script_path.write_text(script, encoding="utf-8")
+            env = {
+                "PYTHONIOENCODING": "utf-8",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
             return self._run_process(
-                [sys.executable, str(script_path)], "python", Path(tmpdir), started
-            )
-
-    def _execute_shell(self, script: str, started: float) -> SandboxResult:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            script_path = Path(tmpdir) / "script.ps1"
-            script_path.write_text(script, encoding="utf-8")
-            return self._run_process(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    str(script_path),
-                ],
-                "shell",
+                [sys.executable, "-I", str(script_path)],
+                "python",
                 Path(tmpdir),
                 started,
+                env=env,
             )
 
     def _execute_sql(self, script: str, started: float) -> SandboxResult:
@@ -102,15 +164,45 @@ class SandboxExecutor:
             statements = [part.strip() for part in script.split(";") if part.strip()]
             rows: list[tuple[object, ...]] = []
             for statement in statements:
+                lowered = statement.lower()
+                if any(
+                    keyword in lowered
+                    for keyword in (
+                        "insert",
+                        "update",
+                        "delete",
+                        "drop",
+                        "alter",
+                        "create",
+                        "attach",
+                        "detach",
+                        "pragma",
+                        "vacuum",
+                        "replace",
+                        "truncate",
+                    )
+                ):
+                    return SandboxResult(
+                        language="sql",
+                        allowed=False,
+                        error="SQL 仅允许 SELECT。",
+                        duration_ms=self._elapsed_ms(started),
+                    )
+                if not statement.lower().startswith("select"):
+                    return SandboxResult(
+                        language="sql",
+                        allowed=False,
+                        error="SQL 仅允许 SELECT。",
+                        duration_ms=self._elapsed_ms(started),
+                    )
                 cursor.execute(statement)
-                if statement.lower().startswith("select"):
-                    rows.extend(cursor.fetchall())
+                rows.extend(cursor.fetchall())
             connection.commit()
             return SandboxResult(
                 language="sql",
                 allowed=True,
                 return_code=0,
-                stdout=str(rows) if rows else f"rows_affected={cursor.rowcount}",
+                stdout=self._truncate(str(rows[:20]) if rows else f"rows_affected={cursor.rowcount}"),
                 duration_ms=self._elapsed_ms(started),
             )
         except Exception as exc:
@@ -134,6 +226,7 @@ class SandboxExecutor:
         language: str,
         cwd: Path,
         started: float,
+        env: dict[str, str] | None = None,
     ) -> SandboxResult:
         try:
             completed = subprocess.run(
@@ -143,14 +236,15 @@ class SandboxExecutor:
                 text=True,
                 timeout=self.timeout_seconds,
                 check=False,
+                env=env,
             )
             return SandboxResult(
                 language=language,
                 allowed=True,
                 return_code=completed.returncode,
-                stdout=completed.stdout,
-                stderr=completed.stderr,
-                error=None if completed.returncode == 0 else completed.stderr,
+                stdout=self._truncate(completed.stdout),
+                stderr=self._truncate(completed.stderr),
+                error=None if completed.returncode == 0 else self._truncate(completed.stderr),
                 duration_ms=self._elapsed_ms(started),
             )
         except subprocess.TimeoutExpired as exc:
@@ -158,8 +252,8 @@ class SandboxExecutor:
                 language=language,
                 allowed=True,
                 return_code=124,
-                stdout=exc.stdout or "",
-                stderr=exc.stderr or "",
+                stdout=self._truncate(exc.stdout or ""),
+                stderr=self._truncate(exc.stderr or ""),
                 error="脚本执行超时。",
                 duration_ms=self._elapsed_ms(started),
             )
@@ -178,6 +272,28 @@ class SandboxExecutor:
             if term.lower() in lowered:
                 return False, f"脚本包含危险命令或高风险操作：{term.strip()}"
         return True, None
+
+    def _validate_python_ast(self, script: str) -> str | None:
+        try:
+            tree = ast.parse(script)
+        except SyntaxError as exc:
+            return f"Python 语法错误：{exc}"
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                return "Python 禁止 import / from import。"
+            if isinstance(node, ast.Name):
+                if node.id.startswith("__") or node.id in self._blocked_names:
+                    return f"Python 禁止使用标识符：{node.id}"
+            if isinstance(node, ast.Attribute):
+                if node.attr.startswith("__") or node.attr in self._blocked_names:
+                    return f"Python 禁止访问属性：{node.attr}"
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id in self._blocked_names:
+                    return f"Python 禁止调用：{node.func.id}"
+        return None
+
+    def _truncate(self, text: str, limit: int = 4000) -> str:
+        return text[:limit]
 
     def _elapsed_ms(self, started: float) -> int:
         return int((time.perf_counter() - started) * 1000)

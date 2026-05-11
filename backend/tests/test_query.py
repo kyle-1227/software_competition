@@ -25,6 +25,8 @@ def test_query_returns_harness_trace_fields() -> None:
     assert data["sop"]
     assert "memory" in data
     assert "ai_coding" in data
+    assert "llm_usage" in data
+    assert "llm_model" in data
 
 
 def test_query_returns_ai_coding_and_sandbox_result() -> None:

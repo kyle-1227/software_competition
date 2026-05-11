@@ -17,6 +17,7 @@ class AICodingTool(BaseTool):
             data={
                 "language": language,
                 "script": script,
+                "explanation": f"基于任务生成 {language} 草案。",
                 "execution_allowed": True,
                 "warnings": [
                     "脚本仅用于比赛演示，执行前仍需人工复核。",
@@ -35,24 +36,12 @@ class AICodingTool(BaseTool):
 
     def _build_script(self, task: str, language: str) -> str:
         if language == "sql":
-            return (
-                "CREATE TABLE diagnostics (id INTEGER PRIMARY KEY, task TEXT);\n"
-                f"INSERT INTO diagnostics (task) VALUES ({task!r});\n"
-                "SELECT id, task FROM diagnostics;"
-            )
+            return "SELECT 'diagnostic' AS task;"
         if language == "shell":
-            return (
-                "$task = "
-                + repr(task)
-                + "\nWrite-Output \"Pending diagnostic automation for: $task\"\n"
-            )
+            return f"Write-Output 'Pending diagnostic automation for: {task}'"
         return (
             "# Generated diagnostic helper script.\n"
             "# Review before running in a maintenance environment.\n"
-            "def main():\n"
-            f"    task = {task!r}\n"
-            "    print(f'Pending diagnostic automation for: {task}')\n"
-            "\n"
-            "if __name__ == '__main__':\n"
-            "    main()\n"
+            f"task = {task!r}\n"
+            "print(f'Pending diagnostic automation for: {task}')\n"
         )

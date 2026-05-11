@@ -12,3 +12,8 @@ sys.path.insert(0, str(BACKEND_DIR))
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def _force_offline_llm_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RUN_LIVE_LLM_TESTS", raising=False)

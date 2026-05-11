@@ -2,13 +2,7 @@ from uuid import uuid4
 
 from typing import Any
 
-from app.schemas.query import (
-    EvidenceItem,
-    EvaluationResult,
-    PlanStep,
-    SandboxResult,
-    ToolCallItem,
-)
+from app.schemas.query import EvidenceItem, EvaluationResult, PlanStep, ToolCallItem
 
 
 class TraceStore:
@@ -58,7 +52,7 @@ class TraceStore:
         self._ensure_trace(trace_id)["memory"] = memory
 
     def record_sandbox_result(
-        self, trace_id: str, sandbox_result: SandboxResult | None
+        self, trace_id: str, sandbox_result: dict[str, Any] | None
     ) -> None:
         self._ensure_trace(trace_id)["sandbox_result"] = sandbox_result
 
