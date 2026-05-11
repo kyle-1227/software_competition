@@ -7,11 +7,14 @@ from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 
 from app.api.router import api_router
+from app.dependencies import _build_services, _attach_services
+from app.dependencies import lifespan
 from app.core.config import settings
 from app.schemas.response import error_response, success_response
 
 
 app = FastAPI(title=settings.app_name)
+
 
 # 前端开发服务运行在 8001 端口。CORS 统一放在应用入口配置，
 # 路由模块只负责处理具体请求。

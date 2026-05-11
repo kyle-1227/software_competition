@@ -1,357 +1,548 @@
-# 设备检修系统 Agent 架构设计草案
+# 设备检修系统 Agent 架构设计方案
 
-## 1. 设计定位
+## 1. 项目定位
 
-本赛题的核心不是普通问答，而是“现场检修决策与作业闭环”。推荐采用 **技能驱动的 Plan -> Execute Agent Harness**：
+本项目面向设备检修场景，核心目标不是做一个普通聊天问答系统，而是构建一个可以支持“现场检修决策与作业闭环”的 Agent Harness 系统。
 
-- 用一个主控 Agent 负责任务理解、计划、调度、追踪状态。
-- 用 Skills 承载可复用的领域流程，例如故障初诊、手册检索、作业指导、合规校验、知识入库。
-- 用工具层连接检索、知识图谱、工单、OCR/视觉模型、数据库等确定性能力。
-- 用 Evaluator/Guardrail 对输出做安全、证据和流程校验。
+系统需要完成：
 
-这样比“多个聊天 Agent 互相对话”更容易演示、测试、部署，也更符合功能完整性、用户体验、创新实用性和文档评分项。
+- 用户输入故障现象、设备名称或检修任务；
+- Agent 生成可追踪的检修计划；
+- 调用手册检索、AI Coding、合规检查等工具；
+- 返回诊断建议、SOP、证据、工具调用记录、评估结果；
+- 通过 Trace 和 Memory 支持演示、调试和多轮上下文；
+- 后续接入真实 PDF 解析、LlamaIndex 检索、多模态输入和知识图谱。
 
-## 2. 总体架构
+当前阶段的核心策略是：
+
+> 先完成 LangGraph Harness + FastAPI + React 的前后端闭环，知识库先使用 placeholder evidence，等 PDF 解析和真实索引完成后替换 Retriever 实现，不改前后端协议。
+
+---
+
+## 2. 当前实现快照
+
+截至当前版本，项目已经完成以下 MVP 能力：
+
+| 模块 | 当前状态 |
+|---|---|
+| FastAPI `/api/query` | 已完成 MVP，返回统一 envelope |
+| React + Vite 前端 | 已真实调用 `/api/query` |
+| Agent 编排底层 | 已迁移为 LangGraph `StateGraph(HarnessState)` |
+| LLM 层 | 已预留 DeepSeek V4 client，支持 fallback |
+| LangChain | 用于 Prompt / LLM client 封装 |
+| LlamaIndex | 当前为兼容 placeholder，真实索引待接入 |
+| Retriever | 返回符合最终 schema 的 placeholder evidence |
+| ToolRegistry | 已有 `manual_lookup`、`ai_coding`、`compliance_check` |
+| AI Coding | 已接入工具分支 |
+| Sandbox | 只允许受限 Python / 只读 SQL，Shell 禁止执行 |
+| TraceStore | 已记录计划、证据、回答、评估、sandbox result |
+| MemoryStore | 已支持 session 级摘要 memory |
+| 前端 Artifact | 已展示 answer、SOP、evidence、tool_calls、evaluation、trace_id、ai_coding |
+| PDF 解析 | 下一阶段 |
+| 真实 LlamaIndex 索引 | 下一阶段 |
+| 多模态检索 | 远期规划 |
+| 知识图谱 | 远期规划 |
+| Human Approval | 远期规划 |
+
+---
+
+## 3. 总体架构
 
 ```text
-PC Web/App
+用户
+ |
+ | 故障问题 / 检修任务 / 设备名称 / 后续图片输入
+ v
+React + Vite 前端
+ |
+ | POST /api/query
+ v
+FastAPI API 层
+ |
+ | QueryRequest
+ v
+AgentHarness 外观层
+ |
+ | graph.ainvoke(initial_state, thread_id=session_id)
+ v
+LangGraph StateGraph
+ |
+ +-- intake_node          输入归一化、session_id、trace_id
+ +-- memory_load_node     读取 session 历史摘要
+ +-- plan_node            生成可展示计划
+ +-- retrieval_node       调用 manual_lookup 工具
+ +-- route_ai_coding      判断是否进入 AI Coding 分支
+ +-- ai_coding_node       生成 Python / SQL 脚本
+ +-- sandbox_node         执行受限 Python / 只读 SQL
+ +-- draft_answer_node    调用 DeepSeek V4 或 fallback 生成回答
+ +-- compliance_node      调用合规检查工具
+ +-- evaluator_node       生成安全/合规/置信度评估
+ +-- trace_node           写入 TraceStore
+ +-- memory_save_node     写入 MemoryStore 摘要
+ +-- finalize_node        构造 QueryResponse
+ |
+ v
+统一 ApiResponse envelope
+ |
+ v
+前端三栏工作台展示
+ |
+ +-- 中间对话区：answer
+ +-- SOP tab：sop + confidence + issues
+ +-- 证据 tab：evidence
+ +-- 记录 tab：trace_id + tool_calls + ai_coding + sandbox_result
+
+
+ 4. 技术栈分工
+
+本项目底层采用：
+
+LangGraph + LangChain + DeepSeek V4 + LlamaIndex + FastAPI + React
+
+各层职责如下：
+
+层	技术	职责
+API 层	FastAPI	提供 /api/query、统一响应 envelope、异常处理
+Agent 编排层	LangGraph	管理状态、节点、条件分支、checkpoint
+LLM 调用层	LangChain + DeepSeek V4	Prompt、LLM 调用、fallback、结构化输出
+知识库检索层	LlamaIndex	后续负责 PDF chunk 索引和 evidence 检索
+工具层	ToolRegistry	统一注册和执行工具
+安全执行层	SandboxExecutor	受限 Python / SQL 执行，禁止 Shell
+评估层	Evaluator	检查安全、合规、证据充分性、置信度
+Trace 层	TraceStore	记录执行过程，供前端和演示使用
+Memory 层	MemoryStore + LangGraph thread_id	保存 session 摘要和图状态
+前端	React + Vite	展示对话、SOP、证据、Trace、AI Coding
+5. Agent Harness 工作流
+
+当前运行 Harness 采用固定图流程：
+
+START
   |
-  | 文本 / 故障图片 / 设备型号 / 检修等级
   v
-API Gateway / Session
+intake_node
   |
   v
-Agent Harness
-  |
-  +-- Intake & Guardrails     输入归一化、权限、风险等级、敏感操作拦截
-  +-- Planner                 生成可展示、可追踪的检修计划
-  +-- Skill Router            选择领域 Skill
-  +-- Executor                按计划调用工具并观察结果
-  +-- Replanner               证据不足、工具失败、风险升高时重规划
-  +-- Evaluator               检查引用、合规、安全、完整性
-  +-- Human Approval          高风险操作和知识入库人工确认
+memory_load_node
   |
   v
-Tool / MCP-like Layer
-  |
-  +-- multimodal_search       文本、图片、设备型号跨模态检索
-  +-- manual_lookup           手册页码、章节、图表定位
-  +-- case_search             历史检修案例检索
-  +-- kg_query                设备-部件-故障-症状-工艺关系查询
-  +-- sop_get                 标准作业流程获取
-  +-- compliance_check        作业步骤合规校验
-  +-- work_order_update       工单和作业记录写入
-  +-- knowledge_submit        案例、经验、标注提交审核
+plan_node
   |
   v
-Data Layer
+retrieval_node
   |
-  +-- 文档库：PDF、图片、日志、案例
-  +-- 向量库：文本 chunk、图像 embedding、设备型号 alias
-  +-- 知识图谱：设备、部件、故障、症状、原因、处理步骤
-  +-- 业务库：用户、角色、工单、审核流、反馈、评测集
-```
+  v
+route_ai_coding
+  |
+  +-- needs_ai_coding = false --> draft_answer_node
+  |
+  +-- needs_ai_coding = true
+          |
+          v
+      ai_coding_node
+          |
+          v
+      sandbox_node
+          |
+          v
+      draft_answer_node
+  |
+  v
+compliance_node
+  |
+  v
+evaluator_node
+  |
+  v
+trace_node
+  |
+  v
+memory_save_node
+  |
+  v
+finalize_node
+  |
+  v
+END
+当前节点职责
+节点	职责
+intake_node	保留 question/device/session_id，初始化 trace、warnings、tool_calls 等字段
+memory_load_node	按 session_id 读取历史摘要
+plan_node	生成当前检修任务计划
+retrieval_node	通过 manual_lookup 获取手册 evidence
+route_ai_coding	判断是否需要 AI Coding
+ai_coding_node	生成脚本结构 {language, script, explanation, warnings}
+sandbox_node	对 Python / SQL 做受限执行，Shell 一律拒绝
+draft_answer_node	使用 prompt + context 调用 DeepSeek V4，失败时 fallback
+compliance_node	调用 compliance_check 工具
+evaluator_node	生成 EvaluationResult
+trace_node	写入完整执行记录
+memory_save_node	写入会话摘要，不保存完整 trace
+finalize_node	构造前端需要的 QueryResponse
 
-## 3. Plan -> Execute 工作流
 
-主流程建议设计为“可见计划 + 有证据执行 + 可回退重规划”：
+6. HarnessState 设计
 
-1. **Intake**：解析用户输入，识别设备型号、故障现象、图片内容、检修等级、风险等级。
-2. **Plan**：生成结构化计划，例如“确认设备 -> 检索手册 -> 匹配案例 -> 形成诊断假设 -> 生成 SOP -> 合规检查”。
-3. **Execute**：每一步只能通过工具拿证据，不允许凭空编造手册内容。
-4. **Observe**：记录工具返回、引用页码、图片相似度、置信度、异常。
-5. **Replan**：证据不足、冲突、工具失败或用户补充信息时重排计划。
-6. **Evaluate**：检查答案是否有来源、步骤是否安全、是否遗漏停机/断电/防护等关键动作。
-7. **Deliver**：输出诊断结论、证据引用、分步作业卡、风险提示和下一步操作。
-8. **Learn**：用户修正或上传案例后，进入审核流；审核通过再进入知识库和知识图谱。
+LangGraph 使用 HarnessState 作为状态 schema，节点返回局部 state update，由 schema 进行字段合并。
 
-推荐的状态结构：
+推荐状态结构：
 
-```json
 {
-  "task_id": "uuid",
-  "task_type": "fault_diagnosis | sop_guidance | knowledge_update",
-  "device": {
-    "model": "string",
-    "component": "string"
-  },
-  "inputs": {
-    "text": "string",
-    "images": ["file_id"]
-  },
-  "risk_level": "low | medium | high",
+  "question": "发动机无法启动怎么办",
+  "device_name": "摩托车发动机",
+  "device_model": null,
+  "session_id": "demo-session",
+  "trace_id": "uuid",
+  "memory": [],
   "plan": [
     {
-      "step_id": "S1",
-      "goal": "检索该设备型号的维修手册",
-      "tool": "manual_lookup",
-      "status": "pending | running | done | failed"
+      "step": "调用 manual_lookup 检索维修手册证据",
+      "status": "已完成"
     }
   ],
   "evidence": [
     {
-      "source_type": "manual | case | kg | image",
-      "source_id": "string",
-      "page": 12,
-      "quote": "short excerpt",
-      "score": 0.87
+      "source": "manual::摩托车发动机",
+      "page": null,
+      "snippet": "当前为 LlamaIndex 兼容占位证据；后续将替换为真实的手册分块。",
+      "score": 0.42,
+      "metadata": {
+        "retriever": "llama-index-placeholder",
+        "question": "发动机无法启动怎么办"
+      }
     }
   ],
-  "observations": [],
-  "final_answer": null,
-  "human_approval_required": false
+  "tool_calls": [
+    {
+      "tool_name": "manual_lookup",
+      "input": {
+        "question": "发动机无法启动怎么办"
+      },
+      "output": [],
+      "status": "success",
+      "duration_ms": 0
+    }
+  ],
+  "needs_ai_coding": false,
+  "ai_coding": null,
+  "sandbox_result": null,
+  "answer": "诊断回答文本",
+  "evaluation": {
+    "is_safe": true,
+    "is_compliant": true,
+    "confidence": 0.9,
+    "issues": []
+  },
+  "sop": [
+    "停机并断电，确认设备处于安全状态。"
+  ],
+  "llm_model": null,
+  "llm_usage": null,
+  "response": null,
+  "errors": [],
+  "warnings": []
 }
-```
 
-## 4. Skills 设计
+设计原则：
 
-Skills 不建议做成“插件噱头”，而是做成可复用的检修作业手册。每个 Skill 是一个目录，包含 `SKILL.md`、可选脚本、参考模板和测试样例。
+State 中只保存 JSON 可序列化数据；
+不在 State 中保存 service 实例；
+ToolRegistry、TraceStore、MemoryStore、SandboxExecutor、Evaluator、LLMClient 通过 graph builder 注入；
+TraceStore 保存完整执行细节；
+MemoryStore 只保存多轮上下文摘要；
+LangGraph checkpointer 负责图状态和 thread_id 关联。
+7. API 设计
+请求
+POST /api/query
+Content-Type: application/json
+{
+  "question": "生成 SQL 脚本检查诊断记录",
+  "device_name": "摩托车发动机",
+  "device_model": null,
+  "session_id": "demo-session"
+}
+响应
 
-```text
-skills/
-  fault-triage/
-    SKILL.md
-    references/fault_taxonomy.md
-    references/diagnosis_template.md
-  multimodal-retrieval/
-    SKILL.md
-    references/query_rewrite.md
-  sop-guidance/
-    SKILL.md
-    references/sop_card_template.md
-    references/safety_checklist.md
-  compliance-review/
-    SKILL.md
-    references/high_risk_rules.md
-  knowledge-curation/
-    SKILL.md
-    references/kg_schema.md
-    references/audit_policy.md
-  demo-evaluator/
-    SKILL.md
-    references/scoring_rubric.md
-```
+对外统一使用 envelope：
 
-### fault-triage
+{
+  "success": true,
+  "data": {
+    "answer": "诊断回答文本",
+    "plan": [],
+    "evidence": [],
+    "tool_calls": [],
+    "evaluation": {
+      "is_safe": true,
+      "is_compliant": true,
+      "confidence": 0.9,
+      "issues": []
+    },
+    "trace_id": "uuid",
+    "sop": [],
+    "memory": [],
+    "ai_coding": null,
+    "llm_usage": null,
+    "llm_model": null
+  },
+  "error": null,
+  "trace_id": "http-request-trace-id"
+}
 
-用途：根据故障现象、图片、设备型号形成诊断假设。
+说明：
 
-输出：
+data.trace_id：Agent Harness 执行 trace；
+envelope 顶层 trace_id：HTTP 请求 trace；
+memory：当前 session 的摘要历史；
+ai_coding：只有触发 AI Coding 分支时返回；
+llm_usage：DeepSeek live 调用时可返回，fallback 时允许为 null；
+llm_model：DeepSeek 模型名，fallback 时可为空或标记 fallback。
+8. 工具层设计
 
-- Top-3 可能故障原因。
-- 每个原因的证据来源。
-- 需要用户补充的问题。
-- 是否可以进入作业指导。
+工具层通过 ToolRegistry 统一管理。
 
-### multimodal-retrieval
+当前 MVP 工具：
 
-用途：将文本、图片、设备型号统一转成检索请求。
+manual_lookup
+ai_coding
+compliance_check
+manual_lookup
 
-能力：
+用途：根据用户问题和设备信息检索维修手册 evidence。
 
-- 查询改写：现场口语 -> 手册术语。
-- 混合检索：BM25 + 向量检索 + 图像相似度。
-- 重排序：按设备型号、章节、故障现象、图片匹配度排序。
-- 返回必须包含页码、章节、相似度、摘要。
+当前状态：
 
-### sop-guidance
+使用 LlamaIndex 兼容 placeholder；
+返回符合最终 EvidenceItem schema 的占位证据；
+后续替换为真实 PDF chunk 检索。
 
-用途：生成分步检修作业卡。
+输入示例：
+
+{
+  "question": "发动机无法启动怎么办",
+  "device_name": "摩托车发动机",
+  "device_model": null,
+  "top_k": 5
+}
+
+输出示例：
+
+[
+  {
+    "source": "manual::摩托车发动机",
+    "page": null,
+    "snippet": "当前为 LlamaIndex 兼容占位证据；后续将替换为真实的手册分块。",
+    "score": 0.42,
+    "metadata": {
+      "retriever": "llama-index-placeholder"
+    }
+  }
+]
+ai_coding
+
+用途：根据用户需求生成 Python / SQL 辅助脚本。
+
+输出统一 schema：
+
+{
+  "language": "sql",
+  "script": "SELECT * FROM diagnosis_records LIMIT 20;",
+  "explanation": "用于检查诊断记录的查询脚本。",
+  "warnings": []
+}
 
 约束：
 
-- 高风险步骤必须提示断电、泄压、挂牌上锁、PPE。
-- 每步包含工具、目标、判定标准、异常处理。
-- 不确定时要求人工确认，不能强行给危险操作。
+只允许 python 和 sql；
+不生成 shell；
+不执行系统命令；
+SQL 默认只允许 SELECT；
+结果交给 sandbox_node 执行。
+compliance_check
 
-### compliance-review
-
-用途：作为 Evaluator 检查输出。
+用途：检查回答是否包含必要安全提醒和合规要素。
 
 检查项：
 
-- 是否引用了手册或案例。
-- 是否遗漏安全步骤。
-- 是否把猜测写成确定结论。
-- 是否给出了可执行但危险的指令。
-- 是否有下一步验证动作。
+是否提示停机；
+是否提示断电；
+是否提示佩戴防护用品；
+是否提醒核对设备型号；
+是否避免直接执行高风险操作；
+是否在证据不足时说明不确定性。
+9. Sandbox 设计
 
-### knowledge-curation
+当前 Sandbox 是比赛演示级受限执行器，不承诺强隔离。
 
-用途：审核一线人员上传的案例、经验和标注。
+支持范围
+类型	当前策略
+Shell	禁止执行
+Python	AST 检查 + 隔离模式 + 超时 + 输出截断
+SQL	内存 SQLite + 只允许 SELECT + 最多 20 行
+Python 限制
 
-流程：
+禁止：
 
-- 抽取设备、部件、故障、症状、原因、处理步骤。
-- 与已有知识图谱去重或合并。
-- 生成待审核变更集。
-- 审核通过后写入知识库，保留版本和来源。
+import
+from import
+open
+exec
+eval
+compile
+__import__
+input
+globals
+locals
+getattr
+setattr
+os
+sys
+subprocess
+socket
+shutil
+pathlib
+requests
+urllib
+multiprocessing
+threading
+ctypes
+pickle
+dunder 访问，如 __class__、__subclasses__、__globals__
 
-## 5. 工具层设计
+允许常见安全内置函数：
 
-工具设计要像给“新员工”写接口说明，参数名清楚、返回可验证、错误可恢复。
+print
+len
+range
+sum
+min
+max
+abs
+round
+sorted
+enumerate
+zip
+str
+int
+float
+bool
+list
+dict
+set
+tuple
+SQL 限制
 
-```json
-{
-  "name": "manual_lookup",
-  "description": "按设备型号、故障现象、章节关键词检索维修手册，返回页码、章节、短摘要和证据片段。用于需要引用标准手册依据的场景。",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "device_model": { "type": "string" },
-      "query": { "type": "string" },
-      "top_k": { "type": "integer", "default": 5 }
-    },
-    "required": ["query"]
-  },
-  "output_schema": {
-    "type": "object",
-    "properties": {
-      "results": {
-        "type": "array",
-        "items": {
-          "type": "object",
-          "properties": {
-            "doc_id": { "type": "string" },
-            "page": { "type": "integer" },
-            "section": { "type": "string" },
-            "snippet": { "type": "string" },
-            "score": { "type": "number" }
-          }
-        }
-      }
-    }
-  }
-}
-```
+只允许：
 
-关键原则：
+SELECT ...
 
-- 检索工具默认分页和 top_k，避免一次返回太多上下文。
-- 诊断工具只返回“候选原因 + 证据”，不直接替用户执行危险决策。
-- 写入类工具必须走权限和审核。
-- 所有工具调用都落库，便于演示 tracing 和测试报告。
+禁止：
 
-## 6. 多模态 RAG 与知识图谱
+INSERT
+UPDATE
+DELETE
+DROP
+ALTER
+CREATE
+ATTACH
+DETACH
+PRAGMA
+VACUUM
+REPLACE
+TRUNCATE
+10. Prompt 与 DeepSeek V4
 
-### 文档处理
+LLM 层采用 DeepSeek V4，调用路径为：
 
-1. PDF 解析：按页切分，保留页码、标题、图表说明。
-2. OCR：提取图片中文字和表格。
-3. Chunk：按“设备/章节/故障/步骤”切分，不只按固定长度切。
-4. 元数据：`device_model`、`component`、`fault_type`、`page`、`section`。
+LangGraph node
+  |
+  v
+DeepSeekLLMClient
+  |
+  v
+LangChain / OpenAI-compatible API
+  |
+  v
+DeepSeek V4
 
-### 检索策略
+当前设计：
 
-- 文本：BM25 + embedding hybrid search。
-- 图片：视觉模型生成描述 + image embedding 相似检索。
-- 型号：alias 表和模糊匹配，解决现场输入不规范。
-- 重排序：优先同设备型号、同部件、同故障类型、同检修等级。
+默认模型：deepseek-v4-pro；
+可通过环境变量切换 deepseek-v4-flash；
+无 API Key 或调用失败时 fallback 到 deterministic 输出；
+测试默认不依赖真实 API；
+只有 RUN_LIVE_LLM_TESTS=1 且存在 DEEPSEEK_API_KEY 时才运行 live LLM 测试；
+不记录、不返回 reasoning_content、thinking、chain_of_thought 等中间推理字段。
+环境变量
+DEEPSEEK_API_KEY=
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-pro
+DEEPSEEK_THINKING_ENABLED=true
+DEEPSEEK_REASONING_EFFORT=high
+DEEPSEEK_TEMPERATURE=0.2
+DEEPSEEK_MAX_TOKENS=2048
+Prompt 文件
+backend/app/prompts/
+├── draft_answer_prompt.md
+├── ai_coding_prompt.md
+└── evaluator_prompt.md
 
-### 知识图谱 Schema
+当前职责：
 
-```text
-Device --has_component--> Component
-Component --has_fault--> Fault
-Fault --has_symptom--> Symptom
-Fault --caused_by--> Cause
-Fault --resolved_by--> Procedure
-Procedure --requires_tool--> Tool
-Procedure --has_safety_rule--> SafetyRule
-Case --evidences--> Fault
-Case --updates--> Procedure
-```
+Prompt	用途
+draft_answer_prompt.md	基于 question、memory、evidence、tool_calls、sandbox_result 生成中文诊断回答
+ai_coding_prompt.md	生成受限 Python / SQL 脚本
+evaluator_prompt.md	后续 LLM evaluator 模板，当前主要使用本地 Evaluator
+11. 前端展示设计
 
-知识图谱在比赛中不一定要上重型图数据库，可以用 PostgreSQL/SQLite 的关系表实现图谱实体和关系，再做图谱可视化，降低 LoongArch 部署风险。
+前端当前采用 React + Vite 三栏布局：
 
-## 7. Harness Engineering
+左侧：会话 / 手册 / 工单 / Artifact 导航
+中间：用户问题 + Agent 回答
+右侧：Artifact 工作区
 
-本项目的 harness 应该包含三部分：运行 harness、评测 harness、演示 harness。
+右侧 Artifact 包含：
 
-### 运行 Harness
+Tab	展示内容
+SOP	sop、evaluation.confidence、evaluation.issues
+证据	evidence.source/page/snippet/score/metadata
+记录	trace_id、tool_calls、ai_coding、sandbox_result
 
-- 固定状态机：`intake -> plan -> execute -> evaluate -> deliver -> learn`。
-- 每次回答保留 plan、tool calls、evidence、guardrail result。
-- 高风险操作设置人工确认。
-- 支持 trace 回放，方便演示“为什么这样诊断”。
+当前前端通过相对路径调用：
 
-### 评测 Harness
+POST /api/query
 
-建立小型黄金测试集，覆盖：
+这意味着开发环境可通过 Vite proxy 转发到后端，避免前端写死 localhost:8000。
 
-- 文本故障问答：问题 -> 正确手册页码/章节。
-- 图片故障检索：图片 -> 正确部件/故障类型。
-- 设备型号别名：非标准型号输入 -> 标准型号。
-- SOP 生成：故障 -> 必须包含的安全步骤。
-- 知识入库：案例文本 -> 正确实体关系。
+12. Skills 设计
 
-指标：
+当前仓库 MVP Skills 以实际目录为准，建议采用：
 
-- Retrieval Recall@5 / MRR。
-- 手册引用命中率。
-- 诊断 Top-3 命中率。
-- SOP 安全规则通过率。
-- 无引用结论率。
-- 工具调用成功率。
-- 用户任务完成时长。
+backend/app/skills/
+├── fault_triage/
+│   ├── AGENT.md
+│   └── skill.md
+├── sop_guidance/
+│   ├── AGENT.md
+│   └── skill.md
+└── ai_coding/
+    ├── AGENT.md
+    ├── skill.md
+    └── tool.py
+当前 MVP Skills
+Skill	当前职责
+fault_triage	故障初诊、诊断假设、下一步排查
+sop_guidance	根据 evidence 和 evaluation 生成作业步骤
+ai_coding	根据用户需求生成受限 Python / SQL 脚本
+后续扩展 Skills
+backend/app/skills/
+├── multimodal_retrieval/
+├── compliance_review/
+├── knowledge_curation/
+├── demo_evaluator/
+└── human_approval/
 
-### 演示 Harness
+说明：
 
-演示视频建议按 7 分钟组织：
-
-1. 展示上传维修手册并自动建库。
-2. 输入“发动机异响/无法启动”等文本故障。
-3. 上传一张故障或部件图片，触发多模态检索。
-4. 展示 Agent 的计划、工具调用、引用页码和诊断结论。
-5. 一键进入标准作业卡，展示合规提醒。
-6. 上传维修案例，审核通过后进入知识图谱。
-7. 展示评测面板和 trace，证明系统可验证。
-
-## 8. 技术选型建议
-
-考虑 LoongArch + 银河麒麟 + 4 核 8GB 的限制，建议优先稳定部署：
-
-- 前端：Vue 3 或 React + Vite。
-- 后端：FastAPI，方便写工具层、Agent harness、文档接口。
-- 数据库：SQLite 起步，复赛/展示可切 PostgreSQL。
-- 向量检索：优先选择能在 LoongArch 编译或纯服务化部署的方案；云端 embedding 或轻量本地 embedding 均可。
-- 知识图谱：先用关系表实现实体关系和可视化，不强依赖 Neo4j。
-- 大模型：云端 Qwen/DeepSeek/OpenAI 等作为主力；本地小模型作为可选离线模式。
-- 多模态：云端视觉模型优先保证效果；本地 OCR/轻量视觉模型做降级。
-
-不要把比赛成败押在 LoongArch CPU 上本地跑大模型的生成质量。赛题允许本地或云端大模型服务，系统本体能在 LoongArch 上运行即可。
-
-## 9. 与评分项的对应关系
-
-| 评分项 | 设计抓手 |
-|---|---|
-| 功能完整性 30% | 多模态检索、SOP、知识沉淀、审核入库全闭环 |
-| 用户体验 20% | 可见计划、引用页码、步骤卡、风险提示、图谱可视化 |
-| 创新与实用性 20% | Skills + Plan-Execute Harness + 多模态 RAG + KG |
-| 文档与演示 20% | trace、评测报告、部署文档、7 分钟演示脚本 |
-| 商业可行性 10% | 降低新人培训成本、减少停机时间、企业知识资产沉淀 |
-
-## 10. 推荐 MVP 范围
-
-第一阶段只做一个设备域，建议使用赛题给的“摩托车发动机维修手册”：
-
-- 手册上传、解析、检索。
-- 文本 + 图片故障输入。
-- 诊断 Top-3 + 引用证据。
-- 标准作业卡生成。
-- 案例上传、审核、入库。
-- 知识图谱可视化。
-- 评测面板。
-
-这已经足够覆盖赛题核心要求。后续再扩展更多设备类型和本地模型适配。
-
-## 11. 参考资料
-
-- Anthropic, Building effective agents: https://www.anthropic.com/engineering/building-effective-agents
-- Anthropic, Harness design for long-running application development: https://www.anthropic.com/engineering/harness-design-long-running-apps
-- Anthropic, Effective harnesses for long-running agents: https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents
-- Anthropic, Effective context engineering for AI agents: https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
-- Anthropic, Writing effective tools for agents: https://www.anthropic.com/engineering/writing-tools-for-agents
-- Agent Skills specification: https://agentskills.io/specification
-- Model Context Protocol docs: https://modelcontextprotocol.io/docs/getting-started/intro
-- OpenAI Agents SDK docs: https://openai.github.io/openai-agents-python/
+AGENT.md 描述该 Skill 的目标、工具、Plan、约束和评估标准；
+skill.md 描述领域规则、模板和执行细节；
+后续可按 Agent Skills 规范逐步统一命名。

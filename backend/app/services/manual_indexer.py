@@ -8,7 +8,8 @@ class ManualIndexer:
     async def register_manual(
         self, payload: ManualRegisterRequest
     ) -> ManualRegisterResponse:
-        # 当前仍是轻量路径检查；后续可替换为异步 PDF 解析和索引构建。
+        # MVP keeps registration deterministic. Next step: parse PDF pages,
+        # chunk text, and build a persisted LlamaIndex index under data/indexes.
         file_path = Path(payload.file_path)
         if not file_path.is_absolute():
             file_path = Path.cwd() / file_path
@@ -20,6 +21,6 @@ class ManualIndexer:
             manual_id=str(uuid4()),
             file_path=str(file_path.resolve()),
             page_count=None,
-            status="已注册",
-            next_step="下一步需要接入 PDF 解析和按页索引构建流程。",
+            status="已注册，等待索引构建",
+            next_step="下一步接入 PDF 解析、文本分块和 LlamaIndex 索引构建流程。",
         )

@@ -18,13 +18,91 @@ type IconName =
   | "upload"
   | "wrench";
 
+<<<<<<< HEAD
 type SceneKey = "maintenance" | "education";
 type ArtifactTab = "path" | "evidence" | "log";
 type WorkflowStatus = "idle" | "analyzing" | "retrieving" | "completed";
 type FeedbackChoice = "accurate" | "inaccurate" | "supplement" | null;
+=======
+type ArtifactTab = "sop" | "evidence" | "log";
+type JsonMap = Record<string, unknown>;
+
+interface ApiEnvelope<T> {
+  success: boolean;
+  data: T | null;
+  error: {
+    code: string;
+    message: string;
+    details?: unknown;
+  } | null;
+  trace_id: string;
+}
+
+interface EvidenceItem {
+  source: string;
+  page: number | null;
+  snippet: string;
+  score: number | null;
+  metadata: JsonMap;
+}
+
+interface PlanStep {
+  step: string;
+  status: string;
+}
+
+interface ToolCallItem {
+  tool_name: string;
+  input: JsonMap;
+  output: JsonMap | JsonMap[] | string | null;
+  status: string;
+  duration_ms: number | null;
+}
+
+interface EvaluationResult {
+  is_safe: boolean;
+  is_compliant: boolean;
+  confidence: number;
+  issues: string[];
+}
+
+interface SandboxResult {
+  language: string;
+  allowed: boolean;
+  return_code: number | null;
+  stdout: string;
+  stderr: string;
+  error: string | null;
+  duration_ms: number | null;
+}
+
+interface AICodingResult {
+  language?: string;
+  script?: string;
+  explanation?: string;
+  warnings?: string[];
+  sandbox_result?: SandboxResult | JsonMap | null;
+  [key: string]: unknown;
+}
+
+interface QueryResponse {
+  answer: string;
+  plan: PlanStep[];
+  evidence: EvidenceItem[];
+  tool_calls: ToolCallItem[];
+  evaluation: EvaluationResult | null;
+  trace_id: string | null;
+  sop: string[];
+  memory: JsonMap[];
+  ai_coding: AICodingResult | null;
+  llm_usage: JsonMap | null;
+  llm_model: string | null;
+}
+>>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
 
 type PromptCard = {
   title: string;
+<<<<<<< HEAD
   detail: string;
   prompt: string;
   accent: "brick" | "sage" | "blue";
@@ -258,6 +336,16 @@ const sceneConfig: Record<SceneKey, SceneConfig> = {
     feedbackSavedText: "反馈已保存，用于后续优化",
   },
 };
+=======
+  meta: string;
+  active?: boolean;
+}> = [
+  { title: "怠速不稳和回火排查", meta: "2 分钟前", active: true },
+  { title: "机油压力灯异常", meta: "今天 14:20" },
+  { title: "冷车启动困难", meta: "昨天" },
+  { title: "气门间隙复检", meta: "周二" },
+];
+>>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
 
 const navItems: Array<{
   icon: IconName;
@@ -272,7 +360,35 @@ const navItems: Array<{
   { icon: "check", label: "反馈标注" },
 ];
 
+<<<<<<< HEAD
 const tabOrder: ArtifactTab[] = ["path", "evidence", "log"];
+=======
+const promptCards: Array<{
+  title: string;
+  detail: string;
+  prompt: string;
+  accent: string;
+}> = [
+  {
+    title: "怠速不稳",
+    detail: "生成检查顺序和证据页",
+    prompt: "热车后怠速不稳，排气管偶尔回火，应该先检查哪里？",
+    accent: "brick",
+  },
+  {
+    title: "启动困难",
+    detail: "定位燃油、点火、压缩链路",
+    prompt: "冷车启动困难，启动机转速正常但发动机不着车，请给出排查流程。",
+    accent: "sage",
+  },
+  {
+    title: "生成脚本",
+    detail: "调用 AI Coding 和沙箱",
+    prompt: "生成 SQL 脚本检查诊断记录",
+    accent: "blue",
+  },
+];
+>>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
 
 const workflowLabels: Record<WorkflowStatus, string> = {
   idle: "已完成",
@@ -280,6 +396,9 @@ const workflowLabels: Record<WorkflowStatus, string> = {
   retrieving: "检索中",
   completed: "已完成",
 };
+
+const fallbackAssistantText =
+  "我会先按进气漏气、点火偏弱、怠速调整偏差三个方向缩小范围。目前证据更指向进气系统密封和火花塞状态，建议不要先拆化油器总成。";
 
 function Icon({ name }: { name: IconName }) {
   const props = {
@@ -421,6 +540,7 @@ function Icon({ name }: { name: IconName }) {
   }
 }
 
+<<<<<<< HEAD
 function createInitialThread(config: SceneConfig): ThreadItem[] {
   return [
     {
@@ -486,13 +606,109 @@ function App() {
     setSelectedFiles([]);
     resetFeedback();
   }
+=======
+function formatJson(value: unknown) {
+  if (value === null || value === undefined) {
+    return "null";
+  }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function formatConfidence(confidence?: number | null) {
+  if (typeof confidence !== "number" || Number.isNaN(confidence)) {
+    return 91;
+  }
+
+  const normalized = confidence <= 1 ? confidence * 100 : confidence;
+  return Math.max(0, Math.min(100, Math.round(normalized)));
+}
+
+function formatScore(score?: number | null) {
+  if (typeof score !== "number" || Number.isNaN(score)) {
+    return "未知";
+  }
+
+  const normalized = score <= 1 ? score * 100 : score;
+  return `${Math.round(normalized)}%`;
+}
+
+function evidencePageLabel(page?: number | null) {
+  return page === null || page === undefined ? "P.-" : `P.${page}`;
+}
+
+function hasMetadata(metadata: JsonMap) {
+  return Object.keys(metadata).length > 0;
+}
+
+function App() {
+  const [draft, setDraft] = useState(promptCards[0].prompt);
+  const [submittedPrompt, setSubmittedPrompt] = useState(promptCards[0].prompt);
+  const [activeTab, setActiveTab] = useState<ArtifactTab>("sop");
+  const [response, setResponse] = useState<QueryResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+>>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
+
+  const confidence = formatConfidence(response?.evaluation?.confidence);
+  const displayedSop = response?.sop?.length ? response.sop : sopSteps;
+  const assistantText = loading
+    ? "正在调用 Harness..."
+    : error
+      ? error
+      : response?.answer || fallbackAssistantText;
+  const inlineEvidence = response?.evidence?.length
+    ? response.evidence.slice(0, 2)
+    : null;
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextPrompt = draft.trim();
 
+<<<<<<< HEAD
     if (!nextPrompt) {
       return;
+=======
+    if (!nextPrompt || loading) {
+      return;
+    }
+
+    setSubmittedPrompt(nextPrompt);
+    setError(null);
+    setLoading(true);
+
+    try {
+      const httpResponse = await fetch("/api/query", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          question: nextPrompt,
+          device_name: "摩托车发动机",
+          session_id: "demo-session",
+        }),
+      });
+      const envelope = (await httpResponse.json()) as ApiEnvelope<QueryResponse>;
+
+      if (!httpResponse.ok || !envelope.success || !envelope.data) {
+        throw new Error(envelope.error?.message || `请求失败：${httpResponse.status}`);
+      }
+
+      setResponse(envelope.data);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "调用 Harness 失败");
+    } finally {
+      setLoading(false);
+>>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
     }
 
     setThread((current) => [
@@ -688,6 +904,7 @@ function App() {
           {thread.map((item, index) => {
             const isLatest = index === thread.length - 1;
 
+<<<<<<< HEAD
             return (
               <div className="thread-exchange" key={item.id}>
                 <article className="message-row is-user">
@@ -803,6 +1020,28 @@ function App() {
                     ) : null}
                   </div>
                 </article>
+=======
+          <article className="message-row is-assistant">
+            <div className="assistant-avatar" aria-hidden="true">
+              A
+            </div>
+            <div className="assistant-message">
+              <p className={error ? "assistant-error" : undefined}>{assistantText}</p>
+              <div className="inline-evidence">
+                {inlineEvidence
+                  ? inlineEvidence.map((item, index) => (
+                      <button key={`${item.source}-${index}`} type="button">
+                        <Icon name="file" />
+                        <span>{evidencePageLabel(item.page)}</span>
+                      </button>
+                    ))
+                  : evidenceItems.slice(0, 2).map((item) => (
+                      <button key={item.page} type="button">
+                        <Icon name="file" />
+                        <span>{item.page}</span>
+                      </button>
+                    ))}
+>>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
               </div>
             );
           })}
@@ -881,7 +1120,12 @@ function App() {
               <Icon name="book" />
               <span>{config.citeLabel}</span>
             </button>
-            <button aria-label="发送" className="send-button" type="submit">
+            <button
+              aria-label="发送"
+              className="send-button"
+              disabled={loading}
+              type="submit"
+            >
               <Icon name="send" />
             </button>
           </div>
@@ -892,7 +1136,11 @@ function App() {
         <header className="artifact-header">
           <div>
             <p>Artifact</p>
+<<<<<<< HEAD
             <h2>{config.artifactTitle}</h2>
+=======
+            <h2>{response?.ai_coding ? "AI Coding 记录" : "维修 SOP"}</h2>
+>>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
           </div>
           <button aria-label="展开工作区" className="icon-button" type="button">
             <Icon name="panel" />
@@ -948,15 +1196,35 @@ function App() {
 
             <div className="risk-strip">
               <span>可信度</span>
+<<<<<<< HEAD
               <strong>{config.confidence}%</strong>
               <div className="confidence-track">
                 <i style={{ width: `${config.confidence}%` }} />
+=======
+              <strong>{confidence}%</strong>
+              <div className="confidence-track">
+                <i style={{ width: `${confidence}%` }} />
+>>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
               </div>
             </div>
 
+            {response?.evaluation?.issues?.length ? (
+              <div className="risk-issues">
+                <strong>风险提示</strong>
+                {response.evaluation.issues.map((issue) => (
+                  <span key={issue}>{issue}</span>
+                ))}
+              </div>
+            ) : null}
+
             <ol className="sop-list">
+<<<<<<< HEAD
               {config.steps.map((step, index) => (
                 <li key={step}>
+=======
+              {displayedSop.map((step, index) => (
+                <li key={`${step}-${index}`}>
+>>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
                   <span>{index + 1}</span>
                   <p>{step}</p>
                 </li>
@@ -982,6 +1250,7 @@ function App() {
         {activeTab === "evidence" ? (
           <section className="artifact-content">
             <div className="evidence-stack">
+<<<<<<< HEAD
               {config.sources.map((item) => (
                 <article className="evidence-row" key={`${item.doc}-${item.locator}`}>
                   <Icon name="file" />
@@ -994,6 +1263,35 @@ function App() {
                   </div>
                 </article>
               ))}
+=======
+              {response?.evidence?.length
+                ? response.evidence.map((item, index) => (
+                    <article className="evidence-row" key={`${item.source}-${index}`}>
+                      <Icon name="file" />
+                      <div>
+                        <strong>{item.source}</strong>
+                        <span>
+                          {evidencePageLabel(item.page)} · 匹配度 {formatScore(item.score)}
+                        </span>
+                        <p className="artifact-copy">{item.snippet}</p>
+                        {hasMetadata(item.metadata) ? (
+                          <pre className="json-snippet">{formatJson(item.metadata)}</pre>
+                        ) : null}
+                      </div>
+                    </article>
+                  ))
+                : evidenceItems.map((item) => (
+                    <article className="evidence-row" key={item.page}>
+                      <Icon name="file" />
+                      <div>
+                        <strong>{item.title}</strong>
+                        <span>
+                          {item.page} · 匹配度 {item.confidence}
+                        </span>
+                      </div>
+                    </article>
+                  ))}
+>>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
             </div>
           </section>
         ) : null}
@@ -1001,6 +1299,7 @@ function App() {
         {activeTab === "log" ? (
           <section className="artifact-content">
             <div className="log-timeline">
+<<<<<<< HEAD
               {config.logs.map((log) => (
                 <article key={log.title}>
                   <Icon name="check" />
@@ -1010,6 +1309,96 @@ function App() {
                   </div>
                 </article>
               ))}
+=======
+              {response?.trace_id ? (
+                <article>
+                  <Icon name="check" />
+                  <div>
+                    <strong>Trace ID</strong>
+                    <span>{response.trace_id}</span>
+                  </div>
+                </article>
+              ) : null}
+
+              {response?.evaluation ? (
+                <article>
+                  <Icon name="check" />
+                  <div>
+                    <strong>评估结果 · 可信度 {confidence}%</strong>
+                    <span>
+                      安全：{response.evaluation.is_safe ? "通过" : "需复核"} · 合规：
+                      {response.evaluation.is_compliant ? "通过" : "需复核"}
+                    </span>
+                    {response.evaluation.issues.length ? (
+                      <p className="artifact-copy">
+                        风险提示：{response.evaluation.issues.join("；")}
+                      </p>
+                    ) : null}
+                  </div>
+                </article>
+              ) : null}
+
+              {response?.tool_calls?.length ? (
+                response.tool_calls.map((call, index) => (
+                  <article key={`${call.tool_name}-${index}`}>
+                    <Icon name="check" />
+                    <div>
+                      <strong>{call.tool_name}</strong>
+                      <span>
+                        {call.status}
+                        {call.duration_ms !== null ? ` · ${call.duration_ms} ms` : ""}
+                      </span>
+                      <details>
+                        <summary>输入 / 输出</summary>
+                        <pre className="json-snippet">
+                          {`input:\n${formatJson(call.input)}\n\noutput:\n${formatJson(call.output)}`}
+                        </pre>
+                      </details>
+                    </div>
+                  </article>
+                ))
+              ) : (
+                <>
+                  <article>
+                    <Icon name="check" />
+                    <div>
+                      <strong>等待 Harness 调用</strong>
+                      <span>提交问题后会显示工具调用记录</span>
+                    </div>
+                  </article>
+                  <article>
+                    <Icon name="check" />
+                    <div>
+                      <strong>等待生成 trace</strong>
+                      <span>后端返回后会显示 trace_id</span>
+                    </div>
+                  </article>
+                </>
+              )}
+
+              {response?.ai_coding ? (
+                <article className="ai-coding-card">
+                  <Icon name="file" />
+                  <div>
+                    <strong>AI Coding · {response.ai_coding.language || "unknown"}</strong>
+                    {response.ai_coding.explanation ? (
+                      <span>{response.ai_coding.explanation}</span>
+                    ) : null}
+                    {response.ai_coding.script ? (
+                      <pre className="code-snippet">{response.ai_coding.script}</pre>
+                    ) : null}
+                    {response.ai_coding.sandbox_result ? (
+                      <details open>
+                        <summary>sandbox_result</summary>
+                        <pre className="json-snippet">
+                          {formatJson(response.ai_coding.sandbox_result)}
+                        </pre>
+                      </details>
+                    ) : null}
+                  </div>
+                </article>
+              ) : null}
+>>>>>>> 68fa89977a133f0683607551c6750b10ad2f815d
             </div>
           </section>
         ) : null}
