@@ -353,6 +353,8 @@ const workflowLabels: Record<WorkflowStatus, string> = {
   completed: "已完成",
 };
 
+const workflowStages = ["分析", "检索", "生成", "校验"];
+
 function Icon({ name }: { name: IconName }) {
   const props = {
     width: 18,
@@ -560,6 +562,8 @@ function App() {
   const [showCorrection, setShowCorrection] = useState(false);
   const [correctionText, setCorrectionText] = useState("");
   const [feedbackNotice, setFeedbackNotice] = useState("");
+  const [isLeftCollapsed, setIsLeftCollapsed] = useState(false);
+  const [isRightCollapsed, setIsRightCollapsed] = useState(false);
   const docInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const latestThreadItem = thread[thread.length - 1];
@@ -589,6 +593,13 @@ function App() {
         detail: `${call.status}${call.duration_ms !== null ? ` · ${call.duration_ms} ms` : ""}`,
       }))
     : config.logs;
+  const workspaceClassName = [
+    "workspace",
+    isLeftCollapsed ? "is-left-collapsed" : "",
+    isRightCollapsed ? "is-right-collapsed" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   function resetFeedback() {
     setFeedbackChoice(null);
@@ -731,8 +742,11 @@ function App() {
   }
 
   return (
-    <div className="workspace">
-      <aside className="sidebar" aria-label="主导航">
+    <div className={workspaceClassName}>
+      <aside
+        className={`sidebar${isLeftCollapsed ? " is-collapsed" : ""}`}
+        aria-label="主导航"
+      >
         <div className="brand-row">
           <div className="brand-mark" aria-hidden="true">
             智
@@ -741,6 +755,14 @@ function App() {
             <span>多模态知识智能体平台</span>
             <strong>智源 Agent</strong>
           </div>
+          <button
+            aria-label={isLeftCollapsed ? "展开左侧信息栏" : "收起左侧信息栏"}
+            className="icon-button sidebar-toggle"
+            onClick={() => setIsLeftCollapsed((current) => !current)}
+            type="button"
+          >
+            <Icon name="panel" />
+          </button>
         </div>
 
         <button className="new-chat-button" type="button" onClick={() => handleSceneChange(scene)}>
@@ -862,14 +884,9 @@ function App() {
                   key: `${source.doc}-${source.locator}`,
                   locator: source.locator,
                 }));
-            const ragSources = item.response?.evidence?.length
-              ? item.response.evidence.slice(0, 2).map((source) => ({
-                  doc: source.source,
-                  locator: evidencePageLabel(source.page),
-                  summary: source.snippet,
-                  confidence: formatConfidence(source.score, config.confidence),
-                }))
-              : config.sources.slice(0, 2);
+            const sourceCount = item.response?.evidence?.length ?? config.sources.length;
+            const stepCount =
+              item.response?.sop?.length || item.response?.plan?.length || config.steps.length;
 
             return (
               <div className="thread-exchange" key={item.id}>
@@ -884,47 +901,56 @@ function App() {
                   <div className="assistant-message">
                     <div className="agent-flow">
                       <div className="assistant-section-title">
-                        <span>智能体协作流程</span>
+                        <span>流程</span>
                         <small>{isLatest ? workflowLabels[workflowStatus] : "已完成"}</small>
                       </div>
-                      <div className="agent-steps">
-                        {config.agents.map((agent, agentIndex) => {
+                      <div className="agent-steps" aria-label="智能体流程阶段">
+                        {workflowStages.map((stage, agentIndex) => {
                           const state = isLatest
                             ? getAgentState(workflowStatus, agentIndex)
                             : "done";
 
                           return (
-                            <span className={`agent-step is-${state}`} key={agent}>
-                              {agent}
+                            <span className={`agent-step is-${state}`} key={stage}>
+                              {stage}
                             </span>
                           );
                         })}
                       </div>
+                      <details className="agent-detail">
+                        <summary>协作 Agent</summary>
+                        <div>
+                          {config.agents.map((agent) => (
+                            <span key={agent}>{agent}</span>
+                          ))}
+                        </div>
+                      </details>
                     </div>
 
                     <p className={item.error ? "assistant-error" : undefined}>{answerText}</p>
 
-                    <div className="rag-preview">
-                      <div className="assistant-section-title">
-                        <span>RAG 来源依据</span>
-                        <small>{item.response ? "接口返回" : "Mock 检索结果"}</small>
-                      </div>
-                      <div className="rag-cards">
-                        {ragSources.map((source) => (
-                          <article className="rag-card" key={`${source.doc}-${source.locator}`}>
-                            <strong>
-                              {source.doc} {source.locator}
-                            </strong>
-                            <span>{source.summary}</span>
-                            <small>置信度 {source.confidence}%</small>
-                          </article>
-                        ))}
-                      </div>
+                    <div className="answer-meta" aria-label="回答摘要操作">
+                      <button onClick={() => setActiveTab("evidence")} type="button">
+                        <Icon name="file" />
+                        <span>{sourceCount} 条依据</span>
+                      </button>
+                      <button onClick={() => setActiveTab("path")} type="button">
+                        <Icon name="clipboard" />
+                        <span>{stepCount} 个步骤</span>
+                      </button>
+                      <button onClick={() => setActiveTab("log")} type="button">
+                        <Icon name="check" />
+                        <span>{item.response ? "运行记录" : "演示记录"}</span>
+                      </button>
                     </div>
 
-                    <div className="inline-evidence">
+                    <div className="inline-evidence" aria-label="快捷来源定位">
                       {inlineSources.map((source) => (
-                        <button key={source.key} type="button">
+                        <button
+                          key={source.key}
+                          onClick={() => setActiveTab("evidence")}
+                          type="button"
+                        >
                           <Icon name="file" />
                           <span>{source.locator}</span>
                         </button>
@@ -1076,22 +1102,40 @@ function App() {
         </form>
       </main>
 
-      <aside className="artifact-shell" aria-label="智能体工作区">
+      <aside
+        className={`artifact-shell${isRightCollapsed ? " is-collapsed" : ""}`}
+        aria-label="智能体工作区"
+      >
+        <button
+          aria-label={isRightCollapsed ? "展开右侧工作区" : "收起右侧工作区"}
+          className="artifact-rail-button"
+          onClick={() => setIsRightCollapsed((current) => !current)}
+          type="button"
+        >
+          <Icon name="panel" />
+          <span>工作区</span>
+        </button>
+
         <header className="artifact-header">
           <div>
             <p>Artifact</p>
             <h2>{latestResponse?.ai_coding ? "AI Coding 记录" : config.artifactTitle}</h2>
           </div>
-          <button aria-label="展开工作区" className="icon-button" type="button">
+          <button
+            aria-label="收起右侧工作区"
+            className="icon-button"
+            onClick={() => setIsRightCollapsed(true)}
+            type="button"
+          >
             <Icon name="panel" />
           </button>
         </header>
 
-        <section className="profile-card" aria-label={config.profile.title}>
-          <div className="profile-card-title">
+        <details className="profile-card" aria-label={config.profile.title}>
+          <summary className="profile-card-title">
             <span>当前对象</span>
             <strong>{config.profile.title}</strong>
-          </div>
+          </summary>
           <dl>
             {config.profile.rows.map((row) => (
               <div key={row.label}>
@@ -1100,7 +1144,7 @@ function App() {
               </div>
             ))}
           </dl>
-        </section>
+        </details>
 
         <div className="artifact-tabs" role="tablist" aria-label="工作区视图">
           {tabOrder.map((tab) => (
@@ -1119,6 +1163,21 @@ function App() {
 
         {activeTab === "path" ? (
           <section className="artifact-content">
+            <section className="result-overview" aria-label="结果摘要">
+              <div>
+                <span>当前产物</span>
+                <strong>{latestResponse?.ai_coding ? "AI Coding 记录" : config.artifactTitle}</strong>
+                <p>{displayedSteps[0]}</p>
+              </div>
+              <div className="result-score">
+                <span>可信度</span>
+                <strong>{confidence}%</strong>
+                <div className="confidence-track">
+                  <i style={{ width: `${confidence}%` }} />
+                </div>
+              </div>
+            </section>
+
             <div className="manual-visual" aria-hidden="true">
               <div className="manual-page">
                 <span />
@@ -1131,14 +1190,6 @@ function App() {
                 <i className="engine-port right" />
                 <i className="engine-line first" />
                 <i className="engine-line second" />
-              </div>
-            </div>
-
-            <div className="risk-strip">
-              <span>可信度</span>
-              <strong>{confidence}%</strong>
-              <div className="confidence-track">
-                <i style={{ width: `${confidence}%` }} />
               </div>
             </div>
 
@@ -1311,7 +1362,7 @@ function App() {
                       </p>
                     ) : null}
                     {latestResponse.ai_coding.sandbox_result ? (
-                      <details open>
+                      <details>
                         <summary>sandbox_result</summary>
                         <pre className="json-snippet">
                           {formatJson(latestResponse.ai_coding.sandbox_result)}
