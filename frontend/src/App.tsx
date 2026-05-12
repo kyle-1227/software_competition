@@ -344,8 +344,6 @@ const navItems: Array<{
   { icon: "check", label: "反馈标注" },
 ];
 
-const tabOrder: ArtifactTab[] = ["path", "evidence", "log"];
-
 const workflowLabels: Record<WorkflowStatus, string> = {
   idle: "已完成",
   analyzing: "分析中",
@@ -555,7 +553,7 @@ function App() {
   const [thread, setThread] = useState<ThreadItem[]>([
     { id: Date.now(), prompt: config.cards[0].prompt, response: null },
   ]);
-  const [activeTab, setActiveTab] = useState<ArtifactTab>("path");
+  const [detailModal, setDetailModal] = useState<ArtifactTab | null>(null);
   const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus>("completed");
   const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([]);
   const [feedbackChoice, setFeedbackChoice] = useState<FeedbackChoice>(null);
@@ -563,7 +561,6 @@ function App() {
   const [correctionText, setCorrectionText] = useState("");
   const [feedbackNotice, setFeedbackNotice] = useState("");
   const [isLeftCollapsed, setIsLeftCollapsed] = useState(false);
-  const [isRightCollapsed, setIsRightCollapsed] = useState(false);
   const docInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const latestThreadItem = thread[thread.length - 1];
@@ -596,7 +593,6 @@ function App() {
   const workspaceClassName = [
     "workspace",
     isLeftCollapsed ? "is-left-collapsed" : "",
-    isRightCollapsed ? "is-right-collapsed" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -614,7 +610,7 @@ function App() {
     setScene(nextScene);
     setDraft(nextConfig.cards[0].prompt);
     setThread([{ id: Date.now(), prompt: nextConfig.cards[0].prompt, response: null }]);
-    setActiveTab("path");
+    setDetailModal(null);
     setWorkflowStatus("completed");
     setSelectedFiles([]);
     resetFeedback();
@@ -930,15 +926,15 @@ function App() {
                     <p className={item.error ? "assistant-error" : undefined}>{answerText}</p>
 
                     <div className="answer-meta" aria-label="回答摘要操作">
-                      <button onClick={() => setActiveTab("evidence")} type="button">
+                      <button onClick={() => setDetailModal("evidence")} type="button">
                         <Icon name="file" />
                         <span>{sourceCount} 条依据</span>
                       </button>
-                      <button onClick={() => setActiveTab("path")} type="button">
+                      <button onClick={() => setDetailModal("path")} type="button">
                         <Icon name="clipboard" />
                         <span>{stepCount} 个步骤</span>
                       </button>
-                      <button onClick={() => setActiveTab("log")} type="button">
+                      <button onClick={() => setDetailModal("log")} type="button">
                         <Icon name="check" />
                         <span>{item.response ? "运行记录" : "演示记录"}</span>
                       </button>
@@ -948,7 +944,7 @@ function App() {
                       {inlineSources.map((source) => (
                         <button
                           key={source.key}
-                          onClick={() => setActiveTab("evidence")}
+                          onClick={() => setDetailModal("evidence")}
                           type="button"
                         >
                           <Icon name="file" />
@@ -1102,280 +1098,254 @@ function App() {
         </form>
       </main>
 
-      <aside
-        className={`artifact-shell${isRightCollapsed ? " is-collapsed" : ""}`}
-        aria-label="智能体工作区"
-      >
-        <button
-          aria-label={isRightCollapsed ? "展开右侧工作区" : "收起右侧工作区"}
-          className="artifact-rail-button"
-          onClick={() => setIsRightCollapsed((current) => !current)}
-          type="button"
+      {detailModal ? (
+        <div
+          className="detail-overlay"
+          onClick={() => setDetailModal(null)}
+          role="presentation"
         >
-          <Icon name="panel" />
-          <span>工作区</span>
-        </button>
-
-        <header className="artifact-header">
-          <div>
-            <p>Artifact</p>
-            <h2>{latestResponse?.ai_coding ? "AI Coding 记录" : config.artifactTitle}</h2>
-          </div>
-          <button
-            aria-label="收起右侧工作区"
-            className="icon-button"
-            onClick={() => setIsRightCollapsed(true)}
-            type="button"
+          <section
+            aria-labelledby="detail-title"
+            aria-modal="true"
+            className="detail-modal"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
           >
-            <Icon name="panel" />
-          </button>
-        </header>
-
-        <details className="profile-card" aria-label={config.profile.title}>
-          <summary className="profile-card-title">
-            <span>当前对象</span>
-            <strong>{config.profile.title}</strong>
-          </summary>
-          <dl>
-            {config.profile.rows.map((row) => (
-              <div key={row.label}>
-                <dt>{row.label}</dt>
-                <dd>{row.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </details>
-
-        <div className="artifact-tabs" role="tablist" aria-label="工作区视图">
-          {tabOrder.map((tab) => (
-            <button
-              aria-selected={activeTab === tab}
-              className={activeTab === tab ? "is-active" : ""}
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              role="tab"
-              type="button"
-            >
-              {config.tabs[tab]}
-            </button>
-          ))}
-        </div>
-
-        {activeTab === "path" ? (
-          <section className="artifact-content">
-            <section className="result-overview" aria-label="结果摘要">
+            <header className="detail-header">
               <div>
-                <span>当前产物</span>
-                <strong>{latestResponse?.ai_coding ? "AI Coding 记录" : config.artifactTitle}</strong>
-                <p>{displayedSteps[0]}</p>
+                <p>详情</p>
+                <h2 id="detail-title">{config.tabs[detailModal]}</h2>
               </div>
-              <div className="result-score">
-                <span>可信度</span>
-                <strong>{confidence}%</strong>
-                <div className="confidence-track">
-                  <i style={{ width: `${confidence}%` }} />
-                </div>
+              <button
+                aria-label="关闭详情"
+                className="icon-button"
+                onClick={() => setDetailModal(null)}
+                type="button"
+              >
+                ×
+              </button>
+            </header>
+
+            <section className="profile-card detail-profile" aria-label={config.profile.title}>
+              <div className="profile-card-title">
+                <span>当前对象</span>
+                <strong>{config.profile.title}</strong>
               </div>
+              <dl>
+                {config.profile.rows.map((row) => (
+                  <div key={row.label}>
+                    <dt>{row.label}</dt>
+                    <dd>{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
             </section>
 
-            <div className="manual-visual" aria-hidden="true">
-              <div className="manual-page">
-                <span />
-                <span />
-                <span />
-              </div>
-              <div className="engine-diagram">
-                <i className="engine-core" />
-                <i className="engine-port left" />
-                <i className="engine-port right" />
-                <i className="engine-line first" />
-                <i className="engine-line second" />
-              </div>
-            </div>
+            {detailModal === "path" ? (
+              <section className="artifact-content">
+                <section className="result-overview" aria-label="结果摘要">
+                  <div>
+                    <span>当前产物</span>
+                    <strong>
+                      {latestResponse?.ai_coding ? "AI Coding 记录" : config.artifactTitle}
+                    </strong>
+                    <p>{displayedSteps[0]}</p>
+                  </div>
+                  <div className="result-score">
+                    <span>可信度</span>
+                    <strong>{confidence}%</strong>
+                    <div className="confidence-track">
+                      <i style={{ width: `${confidence}%` }} />
+                    </div>
+                  </div>
+                </section>
 
-            {latestResponse?.evaluation?.issues?.length ? (
-              <div className="risk-issues">
-                <strong>风险提示</strong>
-                {latestResponse.evaluation.issues.map((issue) => (
-                  <span key={issue}>{issue}</span>
-                ))}
-              </div>
+                {latestResponse?.evaluation?.issues?.length ? (
+                  <div className="risk-issues">
+                    <strong>风险提示</strong>
+                    {latestResponse.evaluation.issues.map((issue) => (
+                      <span key={issue}>{issue}</span>
+                    ))}
+                  </div>
+                ) : null}
+
+                <ol className="sop-list">
+                  {displayedSteps.map((step, index) => (
+                    <li key={`${step}-${index}`}>
+                      <span>{index + 1}</span>
+                      <p>{step}</p>
+                    </li>
+                  ))}
+                </ol>
+
+                <section className="output-preview" aria-labelledby="output-preview-title">
+                  <div className="assistant-section-title">
+                    <span id="output-preview-title">生成成果</span>
+                    <small>示例入口</small>
+                  </div>
+                  <div className="output-tags">
+                    {config.outputs.map((output) => (
+                      <button key={output} type="button">
+                        {output}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              </section>
             ) : null}
 
-            <ol className="sop-list">
-              {displayedSteps.map((step, index) => (
-                <li key={`${step}-${index}`}>
-                  <span>{index + 1}</span>
-                  <p>{step}</p>
-                </li>
-              ))}
-            </ol>
+            {detailModal === "evidence" ? (
+              <section className="artifact-content">
+                <div className="evidence-stack">
+                  {latestResponse?.evidence?.length
+                    ? latestResponse.evidence.map((source, index) => (
+                        <article className="evidence-row" key={`${source.source}-${index}`}>
+                          <Icon name="file" />
+                          <div>
+                            <strong>{source.source}</strong>
+                            <span>
+                              {evidencePageLabel(source.page)} · 匹配度{" "}
+                              {formatScore(source.score)}
+                            </span>
+                            <p className="artifact-copy">{source.snippet}</p>
+                            {hasMetadata(source.metadata) ? (
+                              <pre className="json-snippet">{formatJson(source.metadata)}</pre>
+                            ) : null}
+                          </div>
+                        </article>
+                      ))
+                    : displayedSources.map((source) => (
+                        <article className="evidence-row" key={`${source.doc}-${source.locator}`}>
+                          <Icon name="file" />
+                          <div>
+                            <strong>
+                              {source.doc} {source.locator}
+                            </strong>
+                            <span>{source.summary}</span>
+                            <small>相似度 / 置信度 {source.confidence}%</small>
+                          </div>
+                        </article>
+                      ))}
+                </div>
+              </section>
+            ) : null}
 
-            <section className="output-preview" aria-labelledby="output-preview-title">
-              <div className="assistant-section-title">
-                <span id="output-preview-title">生成成果</span>
-                <small>示例入口</small>
-              </div>
-              <div className="output-tags">
-                {config.outputs.map((output) => (
-                  <button key={output} type="button">
-                    {output}
-                  </button>
-                ))}
-              </div>
-            </section>
-          </section>
-        ) : null}
-
-        {activeTab === "evidence" ? (
-          <section className="artifact-content">
-            <div className="evidence-stack">
-              {latestResponse?.evidence?.length
-                ? latestResponse.evidence.map((source, index) => (
-                    <article className="evidence-row" key={`${source.source}-${index}`}>
-                      <Icon name="file" />
+            {detailModal === "log" ? (
+              <section className="artifact-content">
+                <div className="log-timeline">
+                  {latestResponse?.trace_id ? (
+                    <article>
+                      <Icon name="check" />
                       <div>
-                        <strong>{source.source}</strong>
-                        <span>
-                          {evidencePageLabel(source.page)} · 匹配度 {formatScore(source.score)}
-                        </span>
-                        <p className="artifact-copy">{source.snippet}</p>
-                        {hasMetadata(source.metadata) ? (
-                          <pre className="json-snippet">{formatJson(source.metadata)}</pre>
+                        <strong>Trace ID</strong>
+                        <span>{latestResponse.trace_id}</span>
+                      </div>
+                    </article>
+                  ) : null}
+
+                  {latestResponse?.llm_model || latestResponse?.llm_usage ? (
+                    <article>
+                      <Icon name="check" />
+                      <div>
+                        <strong>LLM 调用信息</strong>
+                        <span>{latestResponse.llm_model || "模型未返回"}</span>
+                        {latestResponse.llm_usage ? (
+                          <pre className="json-snippet">{formatJson(latestResponse.llm_usage)}</pre>
                         ) : null}
                       </div>
                     </article>
-                  ))
-                : displayedSources.map((source) => (
-                    <article className="evidence-row" key={`${source.doc}-${source.locator}`}>
+                  ) : null}
+
+                  {latestResponse?.evaluation ? (
+                    <article>
+                      <Icon name="check" />
+                      <div>
+                        <strong>评估结果 · 可信度 {confidence}%</strong>
+                        <span>
+                          安全：{latestResponse.evaluation.is_safe ? "通过" : "需复核"} · 合规：
+                          {latestResponse.evaluation.is_compliant ? "通过" : "需复核"}
+                        </span>
+                        {latestResponse.evaluation.issues.length ? (
+                          <p className="artifact-copy">
+                            风险提示：{latestResponse.evaluation.issues.join("；")}
+                          </p>
+                        ) : null}
+                      </div>
+                    </article>
+                  ) : null}
+
+                  {latestResponse?.tool_calls?.length
+                    ? latestResponse.tool_calls.map((call, index) => (
+                        <article key={`${call.tool_name}-${index}`}>
+                          <Icon name="check" />
+                          <div>
+                            <strong>{call.tool_name}</strong>
+                            <span>
+                              {call.status}
+                              {call.duration_ms !== null ? ` · ${call.duration_ms} ms` : ""}
+                            </span>
+                            <details>
+                              <summary>输入 / 输出</summary>
+                              <pre className="json-snippet">
+                                {`input:\n${formatJson(call.input)}\n\noutput:\n${formatJson(call.output)}`}
+                              </pre>
+                            </details>
+                          </div>
+                        </article>
+                      ))
+                    : displayedLogs.map((log) => (
+                        <article key={log.title}>
+                          <Icon name="check" />
+                          <div>
+                            <strong>{log.title}</strong>
+                            <span>{log.detail}</span>
+                          </div>
+                        </article>
+                      ))}
+
+                  {latestError ? (
+                    <article>
+                      <Icon name="check" />
+                      <div>
+                        <strong>接口联调状态</strong>
+                        <span>{latestError}</span>
+                      </div>
+                    </article>
+                  ) : null}
+
+                  {latestResponse?.ai_coding ? (
+                    <article className="ai-coding-card">
                       <Icon name="file" />
                       <div>
-                        <strong>
-                          {source.doc} {source.locator}
-                        </strong>
-                        <span>{source.summary}</span>
-                        <small>相似度 / 置信度 {source.confidence}%</small>
+                        <strong>AI Coding · {latestResponse.ai_coding.language || "unknown"}</strong>
+                        {latestResponse.ai_coding.explanation ? (
+                          <span>{latestResponse.ai_coding.explanation}</span>
+                        ) : null}
+                        {latestResponse.ai_coding.script ? (
+                          <pre className="code-snippet">{latestResponse.ai_coding.script}</pre>
+                        ) : null}
+                        {latestResponse.ai_coding.warnings?.length ? (
+                          <p className="artifact-copy">
+                            提示：{latestResponse.ai_coding.warnings.join("；")}
+                          </p>
+                        ) : null}
+                        {latestResponse.ai_coding.sandbox_result ? (
+                          <details>
+                            <summary>sandbox_result</summary>
+                            <pre className="json-snippet">
+                              {formatJson(latestResponse.ai_coding.sandbox_result)}
+                            </pre>
+                          </details>
+                        ) : null}
                       </div>
                     </article>
-                  ))}
-            </div>
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
           </section>
-        ) : null}
-
-        {activeTab === "log" ? (
-          <section className="artifact-content">
-            <div className="log-timeline">
-              {latestResponse?.trace_id ? (
-                <article>
-                  <Icon name="check" />
-                  <div>
-                    <strong>Trace ID</strong>
-                    <span>{latestResponse.trace_id}</span>
-                  </div>
-                </article>
-              ) : null}
-
-              {latestResponse?.llm_model || latestResponse?.llm_usage ? (
-                <article>
-                  <Icon name="check" />
-                  <div>
-                    <strong>LLM 调用信息</strong>
-                    <span>{latestResponse.llm_model || "模型未返回"}</span>
-                    {latestResponse.llm_usage ? (
-                      <pre className="json-snippet">{formatJson(latestResponse.llm_usage)}</pre>
-                    ) : null}
-                  </div>
-                </article>
-              ) : null}
-
-              {latestResponse?.evaluation ? (
-                <article>
-                  <Icon name="check" />
-                  <div>
-                    <strong>评估结果 · 可信度 {confidence}%</strong>
-                    <span>
-                      安全：{latestResponse.evaluation.is_safe ? "通过" : "需复核"} · 合规：
-                      {latestResponse.evaluation.is_compliant ? "通过" : "需复核"}
-                    </span>
-                    {latestResponse.evaluation.issues.length ? (
-                      <p className="artifact-copy">
-                        风险提示：{latestResponse.evaluation.issues.join("；")}
-                      </p>
-                    ) : null}
-                  </div>
-                </article>
-              ) : null}
-
-              {latestResponse?.tool_calls?.length
-                ? latestResponse.tool_calls.map((call, index) => (
-                    <article key={`${call.tool_name}-${index}`}>
-                      <Icon name="check" />
-                      <div>
-                        <strong>{call.tool_name}</strong>
-                        <span>
-                          {call.status}
-                          {call.duration_ms !== null ? ` · ${call.duration_ms} ms` : ""}
-                        </span>
-                        <details>
-                          <summary>输入 / 输出</summary>
-                          <pre className="json-snippet">
-                            {`input:\n${formatJson(call.input)}\n\noutput:\n${formatJson(call.output)}`}
-                          </pre>
-                        </details>
-                      </div>
-                    </article>
-                  ))
-                : displayedLogs.map((log) => (
-                    <article key={log.title}>
-                      <Icon name="check" />
-                      <div>
-                        <strong>{log.title}</strong>
-                        <span>{log.detail}</span>
-                      </div>
-                    </article>
-                  ))}
-
-              {latestError ? (
-                <article>
-                  <Icon name="check" />
-                  <div>
-                    <strong>接口联调状态</strong>
-                    <span>{latestError}</span>
-                  </div>
-                </article>
-              ) : null}
-
-              {latestResponse?.ai_coding ? (
-                <article className="ai-coding-card">
-                  <Icon name="file" />
-                  <div>
-                    <strong>AI Coding · {latestResponse.ai_coding.language || "unknown"}</strong>
-                    {latestResponse.ai_coding.explanation ? (
-                      <span>{latestResponse.ai_coding.explanation}</span>
-                    ) : null}
-                    {latestResponse.ai_coding.script ? (
-                      <pre className="code-snippet">{latestResponse.ai_coding.script}</pre>
-                    ) : null}
-                    {latestResponse.ai_coding.warnings?.length ? (
-                      <p className="artifact-copy">
-                        提示：{latestResponse.ai_coding.warnings.join("；")}
-                      </p>
-                    ) : null}
-                    {latestResponse.ai_coding.sandbox_result ? (
-                      <details>
-                        <summary>sandbox_result</summary>
-                        <pre className="json-snippet">
-                          {formatJson(latestResponse.ai_coding.sandbox_result)}
-                        </pre>
-                      </details>
-                    ) : null}
-                  </div>
-                </article>
-              ) : null}
-            </div>
-          </section>
-        ) : null}
-      </aside>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -59,27 +59,18 @@ textarea:focus-visible {
 
 .workspace {
   display: grid;
-  grid-template-columns: 248px minmax(430px, 1fr) 340px;
+  grid-template-columns: 248px minmax(430px, 1fr);
   gap: 12px;
   min-height: 100dvh;
   padding: 12px;
 }
 
 .workspace.is-left-collapsed {
-  grid-template-columns: 82px minmax(430px, 1fr) 340px;
-}
-
-.workspace.is-right-collapsed {
-  grid-template-columns: 248px minmax(430px, 1fr) 54px;
-}
-
-.workspace.is-left-collapsed.is-right-collapsed {
-  grid-template-columns: 82px minmax(430px, 1fr) 54px;
+  grid-template-columns: 82px minmax(430px, 1fr);
 }
 
 .sidebar,
-.chat-shell,
-.artifact-shell {
+.chat-shell {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -98,10 +89,9 @@ textarea:focus-visible {
 .brand-row,
 .sidebar-footer,
 .section-heading,
-.artifact-header,
+.detail-header,
 .chat-topbar,
 .composer-actions,
-.risk-strip,
 .evidence-row,
 .log-timeline article {
   display: flex;
@@ -143,8 +133,7 @@ textarea:focus-visible {
 .sidebar-footer small,
 .conversation-item small,
 .prompt-card small,
-.artifact-header p,
-.risk-strip span,
+.detail-header p,
 .evidence-row span,
 .evidence-row small,
 .log-timeline span,
@@ -160,7 +149,7 @@ textarea:focus-visible {
 
 .brand-copy strong,
 .section-heading h2,
-.artifact-header h2 {
+.detail-header h2 {
   margin: 0;
   font-size: 14px;
 }
@@ -173,7 +162,6 @@ textarea:focus-visible {
 .scene-switch button,
 .tool-button,
 .mode-switch button,
-.artifact-tabs button,
 .inline-evidence button,
 .feedback-actions button,
 .correction-panel button,
@@ -248,8 +236,7 @@ textarea:focus-visible {
 .conversation-item.is-active,
 .project-chip,
 .scene-switch,
-.mode-switch,
-.artifact-tabs {
+.mode-switch {
   border-color: var(--line);
   background: var(--surface-soft);
 }
@@ -392,8 +379,7 @@ textarea:focus-visible {
 }
 
 .scene-switch,
-.mode-switch,
-.artifact-tabs {
+.mode-switch {
   display: inline-grid;
   grid-auto-flow: column;
   gap: 2px;
@@ -411,16 +397,14 @@ textarea:focus-visible {
   color: var(--muted);
 }
 
-.mode-switch button,
-.artifact-tabs button {
+.mode-switch button {
   min-height: 30px;
   padding: 0 12px;
   color: var(--muted);
 }
 
 .scene-switch button.is-active,
-.mode-switch button.is-active,
-.artifact-tabs button.is-active {
+.mode-switch button.is-active {
   color: var(--ink);
   background: #fffdf8;
   box-shadow: 0 1px 2px rgba(62, 50, 39, 0.1);
@@ -834,56 +818,47 @@ textarea:focus-visible {
   opacity: 0.62;
 }
 
-.artifact-shell {
-  display: flex;
-  flex-direction: column;
-  min-height: calc(100dvh - 24px);
-  overflow: hidden;
-}
-
-.artifact-rail-button {
-  display: none;
-}
-
-.artifact-shell.is-collapsed {
-  align-items: center;
-  justify-content: flex-start;
-  padding: 8px;
-}
-
-.artifact-shell.is-collapsed > :not(.artifact-rail-button) {
-  display: none;
-}
-
-.artifact-shell.is-collapsed .artifact-rail-button {
+.detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
   display: grid;
   place-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 132px;
+  padding: 24px;
+  background: rgba(29, 26, 22, 0.28);
+  backdrop-filter: blur(4px);
+}
+
+.detail-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(820px, 100%);
+  max-height: min(760px, calc(100dvh - 48px));
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
-  color: var(--muted);
-  background: var(--surface-soft);
+  background: rgba(255, 253, 248, 0.98);
+  box-shadow: 0 24px 70px rgba(29, 26, 22, 0.18);
 }
 
-.artifact-shell.is-collapsed .artifact-rail-button span {
-  font-size: 12px;
-  writing-mode: vertical-rl;
-}
-
-.artifact-header {
+.detail-header {
   justify-content: space-between;
   gap: 12px;
   padding: 16px;
   border-bottom: 1px solid var(--line);
 }
 
-.artifact-header p {
+.detail-header p {
   margin: 0 0 4px;
   color: var(--brick);
   font-weight: 700;
   text-transform: uppercase;
+}
+
+.detail-header .icon-button {
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1;
 }
 
 .profile-card {
@@ -901,12 +876,6 @@ textarea:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  cursor: pointer;
-  list-style: none;
-}
-
-.profile-card-title::-webkit-details-marker {
-  display: none;
 }
 
 .profile-card-title strong {
@@ -938,20 +907,16 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
-.artifact-tabs {
-  align-self: stretch;
-  margin: 10px 14px 0;
-}
-
-.artifact-tabs button {
-  width: 100%;
+.detail-profile {
+  flex: 0 0 auto;
 }
 
 .artifact-content {
   display: grid;
   gap: 12px;
+  min-height: 0;
   overflow: auto;
-  padding: 14px;
+  padding: 14px 16px 16px;
 }
 
 .result-overview {
@@ -999,111 +964,6 @@ textarea:focus-visible {
 
 .result-score .confidence-track {
   width: 96px;
-}
-
-.manual-visual {
-  position: relative;
-  display: grid;
-  grid-template-columns: 0.85fr 1fr;
-  gap: 12px;
-  min-height: 112px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background:
-    linear-gradient(120deg, rgba(73, 111, 132, 0.14), transparent),
-    var(--surface-cool);
-  overflow: hidden;
-}
-
-.manual-page {
-  display: grid;
-  align-content: start;
-  gap: 10px;
-  padding: 14px 12px;
-  border: 1px solid rgba(73, 111, 132, 0.22);
-  border-radius: 6px;
-  background: rgba(255, 253, 248, 0.82);
-}
-
-.manual-page span {
-  display: block;
-  height: 8px;
-  border-radius: 999px;
-  background: rgba(73, 111, 132, 0.28);
-}
-
-.manual-page span:nth-child(2) {
-  width: 82%;
-}
-
-.manual-page span:nth-child(3) {
-  width: 62%;
-}
-
-.engine-diagram {
-  position: relative;
-  min-height: 88px;
-}
-
-.engine-diagram i {
-  position: absolute;
-  display: block;
-}
-
-.engine-core {
-  inset: 24px 38px 18px 28px;
-  border: 2px solid rgba(29, 26, 22, 0.72);
-  border-radius: 8px;
-  background: rgba(255, 253, 248, 0.62);
-}
-
-.engine-port {
-  top: 38px;
-  width: 28px;
-  height: 24px;
-  border: 2px solid var(--sage);
-  border-radius: 6px;
-}
-
-.engine-port.left {
-  left: 6px;
-}
-
-.engine-port.right {
-  right: 10px;
-}
-
-.engine-line {
-  height: 2px;
-  background: var(--brick);
-  transform-origin: left center;
-}
-
-.engine-line.first {
-  top: 30px;
-  left: 30px;
-  width: 64px;
-  transform: rotate(18deg);
-}
-
-.engine-line.second {
-  right: 18px;
-  bottom: 24px;
-  width: 58px;
-  transform: rotate(-16deg);
-}
-
-.risk-strip {
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-soft);
-}
-
-.risk-strip strong {
-  color: var(--sage);
 }
 
 .risk-issues {
@@ -1267,9 +1127,7 @@ textarea:focus-visible {
   .scene-switch button:hover,
   .tool-button:hover,
   .icon-button:hover,
-  .artifact-rail-button:hover,
   .mode-switch button:hover,
-  .artifact-tabs button:hover,
   .feedback-actions button:hover {
     border-color: var(--line-strong);
     background: #fffdf8;
@@ -1283,16 +1141,6 @@ textarea:focus-visible {
 @media (max-width: 1180px) {
   .workspace {
     grid-template-columns: 82px minmax(0, 1fr);
-  }
-
-  .workspace.is-right-collapsed {
-    grid-template-columns: 82px minmax(0, 1fr) 54px;
-  }
-
-  .workspace.is-right-collapsed .artifact-shell {
-    grid-column: 3;
-    grid-row: 1 / span 2;
-    min-height: calc(100dvh - 24px);
   }
 
   .sidebar {
@@ -1331,10 +1179,6 @@ textarea:focus-visible {
     border-top: 0;
   }
 
-  .artifact-shell {
-    grid-column: 2;
-    min-height: auto;
-  }
 }
 
 @media (max-width: 820px) {
@@ -1344,9 +1188,7 @@ textarea:focus-visible {
     padding: 10px;
   }
 
-  .workspace.is-left-collapsed,
-  .workspace.is-right-collapsed,
-  .workspace.is-left-collapsed.is-right-collapsed {
+  .workspace.is-left-collapsed {
     display: block;
   }
 
@@ -1365,25 +1207,8 @@ textarea:focus-visible {
     padding-top: 0;
   }
 
-  .chat-shell,
-  .artifact-shell {
+  .chat-shell {
     min-height: auto;
-  }
-
-  .artifact-shell {
-    margin-top: 10px;
-  }
-
-  .artifact-shell.is-collapsed {
-    min-height: 56px;
-  }
-
-  .artifact-shell.is-collapsed .artifact-rail-button {
-    min-height: 40px;
-  }
-
-  .artifact-shell.is-collapsed .artifact-rail-button span {
-    writing-mode: horizontal-tb;
   }
 
   .chat-topbar {
@@ -1440,7 +1265,12 @@ textarea:focus-visible {
     padding-left: 10px;
   }
 
-  .manual-visual {
-    grid-template-columns: 1fr;
+  .detail-overlay {
+    align-items: end;
+    padding: 10px;
+  }
+
+  .detail-modal {
+    max-height: calc(100dvh - 20px);
   }
 }
