@@ -12,8 +12,13 @@ build/
 .env
 data/processed/*
 !data/processed/.gitkeep
+!data/processed/manual_chunks.json
+!data/processed/manual_chunks.jsonl
+!data/processed/manuals/
+!data/processed/manuals/维修手册_41页_分块整理.xlsx
 data/indexes/*
 !data/indexes/.gitkeep
+!data/indexes/manual_keyword_index.json
 data/uploads/*
 !data/uploads/.gitkeep
 

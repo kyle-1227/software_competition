@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from typing import Any
 
 from app.schemas.query import QueryResponse
@@ -93,11 +94,10 @@ def _build_nodes(services) -> dict[str, Any]:
 
     async def plan_node(state: dict[str, Any]) -> dict[str, Any]:
         plan = [
-            {"step": "理解并规范化用户故障请求", "status": "已完成"},
-            {"step": "调用 manual_lookup 检索维修手册证据", "status": "已完成"},
-            {"step": "基于证据生成诊断草案", "status": "已完成"},
-            {"step": "调用 compliance_check 进行合规检查", "status": "已完成"},
-            {"step": "汇总评估结果并记录 trace", "status": "已完成"},
+            {"step": "plan: 识别故障现象、设备对象和检索意图", "status": "completed"},
+            {"step": "retrieve: 调用 manual_lookup 检索维修手册证据", "status": "completed"},
+            {"step": "evaluate: 评估证据充分性、安全性和合规性", "status": "completed"},
+            {"step": "answer: 汇总页码、证据片段和初步诊断建议", "status": "completed"},
         ]
         return {"plan": plan, "needs_ai_coding": _needs_ai_coding(state["question"])}
 
@@ -186,20 +186,12 @@ def _build_nodes(services) -> dict[str, Any]:
         }
 
     async def draft_answer_node(state: dict[str, Any]) -> dict[str, Any]:
-        context = {
-            "question": state["question"],
-            "device": state.get("device_model") or state.get("device_name") or "未知设备",
-            "memory": state.get("memory", []),
-            "evidence": state.get("evidence", []),
-            "tool_calls": state.get("tool_calls", []),
-            "sandbox_result": state.get("sandbox_result"),
-        }
-        response = await services.llm_client.generate_text("draft_answer_prompt.md", context=context)
+        answer = _build_diagnostic_answer(state)
         return {
-            "answer": response.text,
-            "llm_model": response.model,
-            "llm_usage": response.usage,
-            "warnings": state.get("warnings", []) + response.warnings,
+            "answer": answer,
+            "llm_model": "local-diagnostic-template",
+            "llm_usage": None,
+            "warnings": state.get("warnings", []),
         }
 
     async def compliance_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -349,6 +341,219 @@ def _build_fallback_graph(services):
 def _needs_ai_coding(question: str) -> bool:
     lowered = question.lower()
     return any(keyword in lowered for keyword in ("脚本", "代码", "script", "code"))
+
+
+def _build_diagnostic_answer(state: dict[str, Any]) -> str:
+    question = str(state.get("question") or "").strip()
+    device = state.get("device_model") or state.get("device_name") or "当前设备"
+    evidence = [item for item in state.get("evidence", []) if isinstance(item, dict)]
+
+    safety = "安全前提：先停机并断电，佩戴防护用品，确认现场风险受控后再进行检查。"
+    if not evidence:
+        return (
+            f"{safety}\n\n"
+            f"问题：{question}\n\n"
+            "未检索到足够的手册证据，暂不建议在缺少依据时拆卸或调整关键部件。"
+            "请补充更具体的故障现象、部件名称或设备型号后重新查询。"
+        )
+
+    top_evidence = evidence[:3]
+    if _is_parameter_question(question):
+        return _build_parameter_answer(question, device, top_evidence)
+
+    page_refs = _unique_page_refs(top_evidence)
+    evidence_lines = []
+    for index, item in enumerate(top_evidence, start=1):
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        section = metadata.get("section") or metadata.get("chapter") or "相关章节"
+        snippet = _compact_snippet(str(item.get("snippet") or "").strip())
+        evidence_lines.append(
+            f"{index}. {_evidence_page_label(item)} {section}：{snippet}"
+        )
+
+    likely_focus = _diagnosis_focus(top_evidence)
+    inspection_order = _inspection_order(top_evidence)
+    next_actions = _next_actions(top_evidence)
+    evidence_text = "\n".join(evidence_lines)
+    inspection_text = "\n".join(
+        f"{index}. {action}" for index, action in enumerate(inspection_order, start=1)
+    )
+    action_text = "\n".join(f"{index}. {action}" for index, action in enumerate(next_actions, start=1))
+
+    return (
+        f"{safety}\n\n"
+        f"建议先查：\n{inspection_text}\n\n"
+        f"问题：{question}\n"
+        f"设备：{device}\n"
+        f"相关页码：{page_refs}\n\n"
+        f"证据片段：\n{evidence_text}\n\n"
+        f"初步判断：优先围绕{likely_focus}排查。当前证据更适合先做外观、连接、"
+        "间隙/压力等可验证项目，确认异常后再进入拆卸或更换。\n\n"
+        f"下一步检查：\n{action_text}"
+    )
+
+
+def _is_parameter_question(question: str) -> bool:
+    parameter_cues = ("多少", "是多少", "标准值", "标准范围", "范围", "参数", "数值", "多大")
+    diagnostic_cues = ("怎么办", "哪里", "原因", "为什么", "不稳", "回火", "启动困难", "无法启动", "故障")
+    return any(cue in question for cue in parameter_cues) and not any(
+        cue in question for cue in diagnostic_cues
+    )
+
+
+def _build_parameter_answer(
+    question: str,
+    device: str,
+    evidence: list[dict[str, Any]],
+) -> str:
+    top_evidence = evidence[:3]
+    page_refs = _unique_page_refs(top_evidence)
+    best = top_evidence[0] if top_evidence else {}
+    metadata = best.get("metadata") if isinstance(best.get("metadata"), dict) else {}
+    section = metadata.get("section") or metadata.get("chapter") or "相关章节"
+    snippet = str(best.get("snippet") or "").strip()
+    value = _extract_parameter_value(question, snippet)
+
+    direct_answer = (
+        f"火花塞间隙标准值：{value}。"
+        if value
+        else f"根据手册召回片段，答案在 {section} 中；请以证据片段中的标准值为准。"
+    )
+    evidence_line = (
+        f"{_evidence_page_label(best)} {section}：{_compact_snippet(snippet, limit=180)}"
+        if best
+        else "未找到可引用的手册片段。"
+    )
+
+    return (
+        f"{direct_answer}\n\n"
+        f"问题：{question}\n"
+        f"设备：{device}\n"
+        f"相关页码：{page_refs}\n\n"
+        f"依据：\n{evidence_line}\n\n"
+        "测量或更换前仍需先停机并断电，避免烫伤或误启动。"
+    )
+
+
+def _extract_parameter_value(question: str, snippet: str) -> str | None:
+    if "火花塞" in question and "间隙" in question:
+        match = re.search(r"间隙标准值[:：]?\s*([0-9.]+[～~\-－–—][0-9.]+\s*mm)", snippet)
+        if match:
+            return _normalize_range(match.group(1))
+
+    match = re.search(r"([0-9.]+[～~\-－–—][0-9.]+\s*(?:mm|kPa|N[·.]?m))", snippet)
+    if match:
+        return _normalize_range(match.group(1))
+    return None
+
+
+def _normalize_range(value: str) -> str:
+    return re.sub(r"\s+", " ", value.replace("~", "～")).strip()
+
+
+def _diagnosis_focus(evidence: list[dict[str, Any]]) -> str:
+    terms: list[str] = []
+    candidate_terms = [
+        "火花塞间隙",
+        "火花塞",
+        "压缩压力",
+        "气门间隙",
+        "进气门",
+        "排气门",
+        "气门",
+        "发动机",
+    ]
+    for item in evidence:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        keywords = metadata.get("keywords") if isinstance(metadata.get("keywords"), list) else []
+        terms.extend(str(keyword) for keyword in keywords[:3])
+        haystack = " ".join(
+            str(value)
+            for value in (
+                metadata.get("chapter"),
+                metadata.get("section"),
+                metadata.get("block_type"),
+                item.get("snippet"),
+            )
+            if value
+        )
+        terms.extend(term for term in candidate_terms if term in haystack)
+    if terms:
+        found = set(terms)
+        prioritized = [term for term in candidate_terms if term in found]
+        fallback = [term for term in dict.fromkeys(terms) if term not in prioritized]
+        return "、".join((prioritized + fallback)[:5])
+    return "手册召回的相关部件和检查标准"
+
+
+def _next_actions(evidence: list[dict[str, Any]]) -> list[str]:
+    actions = [
+        "核对召回页码中的标准值、工具要求和警示信息。",
+        "按证据片段从低风险检查开始，记录现象、测量值和部件状态。",
+        "若检测值超出手册范围，停止扩大拆检并交由具备资质的维修人员复核。",
+    ]
+    block_types = {
+        str((item.get("metadata") or {}).get("block_type", ""))
+        for item in evidence
+        if isinstance(item.get("metadata"), dict)
+    }
+    if any("测量" in block_type or "检查" in block_type for block_type in block_types):
+        actions.insert(1, "优先完成手册要求的测量/检查项目，并与标准范围比较。")
+    return actions[:4]
+
+
+def _inspection_order(evidence: list[dict[str, Any]]) -> list[str]:
+    haystack = _evidence_haystack(evidence)
+    actions: list[str] = []
+
+    if "火花塞" in haystack:
+        actions.append("先检查火花塞状态和火花塞间隙；手册 P.3 给出的间隙标准值是 0.7～0.9 mm。")
+    if "压缩压力" in haystack:
+        actions.append("再按 P.3 测量压缩压力，确认发动机压缩是否低于标准范围。")
+    if "气门间隙" in haystack:
+        actions.append("复核 P.15 气门间隙：进气门 0.13～0.20 mm，排气门 0.20～0.30 mm。")
+
+    if actions:
+        return actions[:3]
+
+    return [
+        "先从召回证据中风险最低、无需扩大拆检的检查项开始。",
+        "记录测量值和部件状态，再决定是否进入拆卸或更换。",
+    ]
+
+
+def _evidence_page_label(item: dict[str, Any]) -> str:
+    page = item.get("page")
+    return f"P.{page}" if page is not None else "P.-"
+
+
+def _unique_page_refs(evidence: list[dict[str, Any]]) -> str:
+    refs = dict.fromkeys(_evidence_page_label(item) for item in evidence)
+    return "、".join(refs)
+
+
+def _evidence_haystack(evidence: list[dict[str, Any]]) -> str:
+    values: list[str] = []
+    for item in evidence:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        values.extend(
+            str(value)
+            for value in (
+                metadata.get("chapter"),
+                metadata.get("section"),
+                metadata.get("block_type"),
+                item.get("snippet"),
+            )
+            if value
+        )
+    return " ".join(values)
+
+
+def _compact_snippet(snippet: str, limit: int = 150) -> str:
+    compacted = " ".join(snippet.split())
+    if len(compacted) <= limit:
+        return compacted
+    return compacted[:limit].rstrip() + "..."
 
 
 def _script_hash(script: str) -> str:

@@ -31,7 +31,17 @@
 
 ## 前端启动
 
-进入前端目录，安装依赖并启动开发服务器：
+联调真实检索结果时需要先启动后端，再启动前端。只运行前端时，页面会保留 mock 展示，但无法调用 `/api/query`。
+
+先启动后端：
+
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+再另开一个终端进入前端目录，安装依赖并启动开发服务器：
 
 ```bash
 cd frontend

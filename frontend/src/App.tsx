@@ -351,7 +351,7 @@ const workflowLabels: Record<WorkflowStatus, string> = {
   completed: "已完成",
 };
 
-const workflowStages = ["分析", "检索", "生成", "校验"];
+const workflowStages = ["plan", "retrieve", "evaluate", "answer"];
 
 function Icon({ name }: { name: IconName }) {
   const props = {
@@ -546,6 +546,27 @@ function hasMetadata(metadata: JsonMap) {
   return Object.keys(metadata).length > 0;
 }
 
+async function readApiEnvelope<T>(response: Response): Promise<ApiEnvelope<T>> {
+  const text = await response.text();
+
+  if (!text.trim()) {
+    throw new Error(
+      response.ok
+        ? "后端返回空响应，请确认 FastAPI 服务已在 8000 端口启动。"
+        : `请求失败：${response.status} ${response.statusText || "后端无响应"}`,
+    );
+  }
+
+  try {
+    return JSON.parse(text) as ApiEnvelope<T>;
+  } catch {
+    const preview = text.replace(/\s+/g, " ").slice(0, 120);
+    throw new Error(
+      `后端返回非 JSON 响应（HTTP ${response.status}）。请确认已启动 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000。响应片段：${preview}`,
+    );
+  }
+}
+
 function App() {
   const [scene, setScene] = useState<SceneKey>("maintenance");
   const config = sceneConfig[scene];
@@ -630,10 +651,11 @@ function App() {
       ...current,
       { id: nextId, prompt: nextPrompt, response: null, error: null, loading: true },
     ]);
+    setDraft("");
     setWorkflowStatus("analyzing");
     resetFeedback();
 
-    window.setTimeout(() => setWorkflowStatus("retrieving"), 450);
+    const retrievingTimer = window.setTimeout(() => setWorkflowStatus("retrieving"), 450);
 
     try {
       const httpResponse = await fetch("/api/query", {
@@ -654,7 +676,7 @@ function App() {
           session_id: `demo-${scene}`,
         }),
       });
-      const envelope = (await httpResponse.json()) as ApiEnvelope<QueryResponse>;
+      const envelope = await readApiEnvelope<QueryResponse>(httpResponse);
 
       if (!httpResponse.ok || !envelope.success || !envelope.data) {
         throw new Error(envelope.error?.message || `请求失败：${httpResponse.status}`);
@@ -680,6 +702,7 @@ function App() {
         ),
       );
     } finally {
+      window.clearTimeout(retrievingTimer);
       setWorkflowStatus("completed");
     }
   }

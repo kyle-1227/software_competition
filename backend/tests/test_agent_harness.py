@@ -12,7 +12,12 @@ async def test_agent_harness_answer_contains_traceable_outputs() -> None:
     )
 
     assert response.answer
-    assert len(response.plan) >= 5
+    assert [item.step.split(":", 1)[0] for item in response.plan] == [
+        "plan",
+        "retrieve",
+        "evaluate",
+        "answer",
+    ]
     assert response.evidence
     assert response.tool_calls
     assert response.evaluation is not None

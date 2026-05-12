@@ -36,6 +36,8 @@ class Evaluator:
             issues.append("回答缺少必要的安全或合规提示。")
         if not evidence:
             issues.append("缺少手册证据支撑。")
+        elif max(_evidence_score(item) for item in evidence) < 0.4:
+            issues.append("手册证据匹配度较低，建议补充更具体的故障现象。")
         sandbox_call = next(
             (call for call in tool_calls if call.tool_name == "sandbox_execute"),
             None,
@@ -60,3 +62,11 @@ class Evaluator:
             confidence=min(confidence, 1.0),
             issues=issues,
         )
+
+
+def _evidence_score(item: EvidenceItem | dict) -> float:
+    if isinstance(item, EvidenceItem):
+        return float(item.score or 0.0)
+    if isinstance(item, dict):
+        return float(item.get("score") or 0.0)
+    return 0.0

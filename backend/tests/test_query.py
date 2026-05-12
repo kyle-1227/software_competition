@@ -17,12 +17,27 @@ def test_query_returns_harness_trace_fields() -> None:
     data = body["data"]
     assert body["success"] is True
     assert data["answer"]
-    assert data["plan"]
+    assert [item["step"].split(":", 1)[0] for item in data["plan"]] == [
+        "plan",
+        "retrieve",
+        "evaluate",
+        "answer",
+    ]
     assert data["evidence"]
+    assert set(data["evidence"][0]["metadata"]) == {
+        "chapter",
+        "section",
+        "block_type",
+    }
     assert data["tool_calls"]
     assert data["evaluation"]["confidence"] > 0
     assert data["trace_id"]
     assert data["sop"]
+    assert "建议先查" in data["answer"]
+    assert "相关页码" in data["answer"]
+    assert "证据片段" in data["answer"]
+    assert "初步判断" in data["answer"]
+    assert "下一步检查" in data["answer"]
     assert "memory" in data
     assert "ai_coding" in data
     assert "llm_usage" in data
@@ -40,6 +55,21 @@ def test_query_returns_ai_coding_and_sandbox_result() -> None:
     assert data["ai_coding"]["language"] == "sql"
     assert data["ai_coding"]["sandbox_result"]["allowed"] is True
     assert any(call["tool_name"] == "sandbox_execute" for call in data["tool_calls"])
+
+
+def test_query_parameter_question_returns_direct_value() -> None:
+    response = client.post(
+        "/api/query",
+        json={"question": "火花塞间隙是多少？", "device_name": "摩托车发动机"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    answer = data["answer"]
+    assert "火花塞间隙标准值：0.7～0.9 mm" in answer
+    assert "相关页码：P.3" in answer
+    assert "建议先查" not in answer
+    assert "安全前提" not in answer
 
 
 def test_manual_alias_register_missing_file_uses_error_envelope() -> None:

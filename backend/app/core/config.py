@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     @property
     def data_path(self) -> Path:
         # 相对路径基于 backend 项目根目录解析，而不是基于命令执行目录解析。
-        backend_dir = Path(__file__).resolve().parents[3]
+        backend_dir = Path(__file__).resolve().parents[2]
         return (backend_dir / self.data_dir).resolve()
 
 
