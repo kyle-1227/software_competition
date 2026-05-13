@@ -10,6 +10,23 @@ from app.services.graph.state import HarnessState
 
 logger = logging.getLogger(__name__)
 
+LOCAL_DIAGNOSTIC_MODEL = "local-diagnostic-template"
+DRAFT_ANSWER_PROMPT = (
+    "你是设备检修智能辅助系统，请基于手册证据、工具调用记录和安全约束，"
+    "用中文生成诊断建议。必须引用证据页码和片段；证据不足时明确说明；"
+    "不要编造手册内容；包含安全提醒。"
+)
+SENSITIVE_REASONING_KEYS = {
+    "reasoning_content",
+    "reasoning",
+    "thinking",
+    "chain_of_thought",
+}
+PROVIDER_FALLBACK_MARKERS = (
+    "DeepSeek 未配置或不可用",
+    "deterministic fallback",
+)
+
 
 def build_harness_graph(services) -> Any:
     """Build a LangGraph-compatible harness or a safe fallback runner."""
@@ -186,13 +203,7 @@ def _build_nodes(services) -> dict[str, Any]:
         }
 
     async def draft_answer_node(state: dict[str, Any]) -> dict[str, Any]:
-        answer = _build_diagnostic_answer(state)
-        return {
-            "answer": answer,
-            "llm_model": "local-diagnostic-template",
-            "llm_usage": None,
-            "warnings": state.get("warnings", []),
-        }
+        return await _draft_answer_with_llm(services, state)
 
     async def compliance_node(state: dict[str, Any]) -> dict[str, Any]:
         result = await services.tool_registry.execute(
@@ -336,6 +347,109 @@ def _build_fallback_graph(services):
             return current
 
     return _FallbackGraph()
+
+
+async def _draft_answer_with_llm(services, state: dict[str, Any]) -> dict[str, Any]:
+    state_warnings = _string_list(state.get("warnings", []))
+    llm_response = None
+    llm_warnings: list[str] = []
+    fallback_reason: str | None = None
+
+    llm_client = getattr(services, "llm_client", None)
+    generate_text = getattr(llm_client, "generate_text", None)
+    if generate_text is None:
+        fallback_reason = "LLM client unavailable, used local diagnostic template."
+    else:
+        try:
+            llm_response = await generate_text(
+                DRAFT_ANSWER_PROMPT,
+                _build_llm_context(state),
+            )
+            llm_warnings = _string_list(getattr(llm_response, "warnings", []))
+        except Exception as exc:
+            fallback_reason = f"LLM answer generation failed, used local diagnostic template: {exc}"
+
+    llm_usage = getattr(llm_response, "usage", None) if llm_response is not None else None
+    llm_text = _filter_reasoning_text(str(getattr(llm_response, "text", "") or "")).strip()
+
+    if llm_response is None:
+        use_local_fallback = True
+    elif not llm_text:
+        use_local_fallback = True
+        fallback_reason = "LLM returned empty answer, used local diagnostic template."
+    elif _has_provider_fallback_warning(llm_warnings):
+        use_local_fallback = True
+        fallback_reason = "LLM provider fallback detected, used local diagnostic template."
+    else:
+        use_local_fallback = False
+
+    warnings = state_warnings + llm_warnings
+    if fallback_reason:
+        warnings.append(fallback_reason)
+
+    if use_local_fallback:
+        return {
+            "answer": _build_diagnostic_answer(state),
+            "llm_model": LOCAL_DIAGNOSTIC_MODEL,
+            "llm_usage": llm_usage,
+            "warnings": warnings,
+        }
+
+    return {
+        "answer": llm_text,
+        "llm_model": getattr(llm_response, "model", None) or LOCAL_DIAGNOSTIC_MODEL,
+        "llm_usage": llm_usage,
+        "warnings": warnings,
+    }
+
+
+def _build_llm_context(state: dict[str, Any]) -> dict[str, Any]:
+    context = {
+        "question": state.get("question"),
+        "device_name": state.get("device_name"),
+        "device_model": state.get("device_model"),
+        "memory": state.get("memory", []),
+        "evidence": state.get("evidence", []),
+        "tool_calls": state.get("tool_calls", []),
+        "sandbox_result": state.get("sandbox_result"),
+        "ai_coding": state.get("ai_coding"),
+        "evaluation": state.get("evaluation"),
+        "warnings": state.get("warnings", []),
+    }
+    return _filter_reasoning_fields(context)
+
+
+def _filter_reasoning_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _filter_reasoning_fields(item)
+            for key, item in value.items()
+            if str(key) not in SENSITIVE_REASONING_KEYS
+        }
+    if isinstance(value, list):
+        return [_filter_reasoning_fields(item) for item in value]
+    return value
+
+
+def _filter_reasoning_text(text: str) -> str:
+    filtered = text
+    for key in SENSITIVE_REASONING_KEYS:
+        filtered = filtered.replace(key, "")
+    return filtered
+
+
+def _has_provider_fallback_warning(warnings: list[str]) -> bool:
+    return any(
+        marker in warning
+        for warning in warnings
+        for marker in PROVIDER_FALLBACK_MARKERS
+    )
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item is not None]
 
 
 def _needs_ai_coding(question: str) -> bool:
