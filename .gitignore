@@ -10,6 +10,8 @@ node_modules/
 dist/
 build/
 .env
+backend/.env
+frontend/.env
 data/processed/*
 !data/processed/.gitkeep
 !data/processed/manual_chunks.json

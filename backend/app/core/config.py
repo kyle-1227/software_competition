@@ -9,10 +9,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     debug: bool = False
     api_prefix: str = "/api"
-    cors_origins: list[str] = [
-        "http://localhost:8001",
-        "http://127.0.0.1:8001",
-    ]
+    frontend_origins: str = "http://localhost:8001,http://127.0.0.1:8001"
     data_dir: str = "../data"
     deepseek_api_key: str | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
@@ -29,14 +26,6 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    @field_validator("cors_origins", mode="before")
-    @classmethod
-    def parse_cors_origins(cls, value: str | list[str]) -> list[str]:
-        # .env 中使用逗号分隔字符串，测试或代码中也可以直接传 list。
-        if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
-        return value
-
     @field_validator("debug", mode="before")
     @classmethod
     def parse_debug(cls, value: bool | str) -> bool:
@@ -44,6 +33,14 @@ class Settings(BaseSettings):
         if isinstance(value, str) and value.lower() in {"release", "prod", "production"}:
             return False
         return value
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [
+            origin.strip()
+            for origin in self.frontend_origins.split(",")
+            if origin.strip()
+        ]
 
     @property
     def data_path(self) -> Path:
