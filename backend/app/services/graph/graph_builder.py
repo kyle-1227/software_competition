@@ -5,6 +5,7 @@ import logging
 import re
 from typing import Any
 
+from app.core.config import settings
 from app.schemas.query import QueryResponse
 from app.services.graph.state import HarnessState
 
@@ -29,7 +30,11 @@ PROVIDER_FALLBACK_MARKERS = (
 
 
 def build_harness_graph(services) -> Any:
-    """Build a LangGraph-compatible harness or a safe fallback runner."""
+    """Build a LangGraph-compatible harness or a safe fallback runner.
+
+    If settings.use_orchestrator is True, builds the new Orchestrator-Workers
+    graph. Otherwise builds the legacy 13-node DAG.
+    """
     checkpointer, warning = _build_checkpointer()
     if warning:
         logger.warning(warning)
@@ -41,6 +46,14 @@ def build_harness_graph(services) -> Any:
         logger.warning("LangGraph unavailable, using fallback runner: %s", exc)
         return _build_fallback_graph(services)
 
+    if getattr(settings, "use_orchestrator", False):
+        return _build_new_graph(services, StateGraph, END, checkpointer)
+    else:
+        return _build_legacy_graph(services, StateGraph, END, checkpointer)
+
+
+def _build_legacy_graph(services, StateGraph, END, checkpointer) -> Any:
+    """Legacy 13-node DAG (the original Prompt Chaining pattern)."""
     graph = StateGraph(HarnessState)
     nodes = _build_nodes(services)
     graph.add_node("intake_node", nodes["intake_node"])
@@ -70,6 +83,77 @@ def build_harness_graph(services) -> Any:
     graph.add_edge("draft_answer_node", "compliance_node")
     graph.add_edge("compliance_node", "evaluator_node")
     graph.add_edge("evaluator_node", "trace_node")
+    graph.add_edge("trace_node", "memory_save_node")
+    graph.add_edge("memory_save_node", "finalize_node")
+    graph.add_edge("finalize_node", END)
+    return graph.compile(checkpointer=checkpointer)
+
+
+def _build_new_graph(services, StateGraph, END, checkpointer) -> Any:
+    """New Orchestrator-Workers graph (Phase 1+).
+
+    When use_evaluator_optimizer is True, uses evaluator_optimizer_node
+    (collapse draft_answer + compliance + evaluator into one iterative node).
+    When use_output_guardrail is True, inserts output_guardrail_node before trace.
+    """
+    use_eo = getattr(settings, "use_evaluator_optimizer", False)
+    use_og = getattr(settings, "use_output_guardrail", False)
+    graph = StateGraph(HarnessState)
+    nodes = _build_new_nodes(services)
+
+    graph.add_node("intake_node", nodes["intake_node"])
+    graph.add_node("input_guardrail_node", nodes["input_guardrail_node"])
+    graph.add_node("memory_load_node", nodes["memory_load_node"])
+    graph.add_node("orchestrator_node", nodes["orchestrator_node"])
+    graph.add_node("worker_executor_node", nodes["worker_executor_node"])
+
+    if use_eo:
+        graph.add_node("evaluator_optimizer_node", nodes["evaluator_optimizer_node"])
+    else:
+        graph.add_node("draft_answer_node", nodes["draft_answer_node"])
+        graph.add_node("compliance_node", nodes["compliance_node"])
+        graph.add_node("evaluator_node", nodes["evaluator_node"])
+
+    if use_og:
+        graph.add_node("output_guardrail_node", nodes["output_guardrail_node"])
+
+    graph.add_node("trace_node", nodes["trace_node"])
+    graph.add_node("memory_save_node", nodes["memory_save_node"])
+    graph.add_node("finalize_node", nodes["finalize_node"])
+
+    graph.set_entry_point("intake_node")
+    graph.add_edge("intake_node", "input_guardrail_node")
+
+    # Input guardrail: if blocked, skip directly to finalize
+    graph.add_conditional_edges(
+        "input_guardrail_node",
+        nodes["route_after_guardrail"],
+        {
+            "blocked": "finalize_node",
+            "continue": "memory_load_node",
+        },
+    )
+
+    graph.add_edge("memory_load_node", "orchestrator_node")
+    graph.add_edge("orchestrator_node", "worker_executor_node")
+
+    if use_eo:
+        graph.add_edge("worker_executor_node", "evaluator_optimizer_node")
+        if use_og:
+            graph.add_edge("evaluator_optimizer_node", "output_guardrail_node")
+            graph.add_edge("output_guardrail_node", "trace_node")
+        else:
+            graph.add_edge("evaluator_optimizer_node", "trace_node")
+    else:
+        graph.add_edge("worker_executor_node", "draft_answer_node")
+        graph.add_edge("draft_answer_node", "compliance_node")
+        graph.add_edge("compliance_node", "evaluator_node")
+        if use_og:
+            graph.add_edge("evaluator_node", "output_guardrail_node")
+            graph.add_edge("output_guardrail_node", "trace_node")
+        else:
+            graph.add_edge("evaluator_node", "trace_node")
+
     graph.add_edge("trace_node", "memory_save_node")
     graph.add_edge("memory_save_node", "finalize_node")
     graph.add_edge("finalize_node", END)
@@ -307,6 +391,181 @@ def _build_nodes(services) -> dict[str, Any]:
         "memory_save_node": memory_save_node,
         "finalize_node": finalize_node,
         "route_ai_coding": route_ai_coding,
+    }
+
+
+def _ensure_new_services(services) -> None:
+    """Lazily construct Phase 1-2 services on the services namespace."""
+    if not hasattr(services, "orchestrator") or services.orchestrator is None:
+        from app.services.orchestrator import Orchestrator
+        from app.services.guardrails.input_guard import InputGuardrail
+        from app.services.workers.dispatcher import WorkerDispatcher
+        from app.services.workers.fault_triage import FaultTriageWorker
+        from app.services.workers.sop_guidance import SOPGuidanceWorker
+        from app.services.workers.ai_coding import AICodingWorker
+
+        llm_client = getattr(services, "llm_client", None)
+        services.orchestrator = Orchestrator(llm_client=llm_client)
+        services.input_guardrail = InputGuardrail(llm_client=llm_client)
+
+        workers = {
+            "fault_triage": FaultTriageWorker(),
+            "sop_guidance": SOPGuidanceWorker(),
+            "ai_coding": AICodingWorker(),
+        }
+        services.worker_dispatcher = WorkerDispatcher(workers)
+
+    # Phase 2: evaluator services (lazy)
+    if not hasattr(services, "llm_evaluator") or services.llm_evaluator is None:
+        from app.services.evaluator_llm import LLMEvaluator
+        from app.services.evaluator_optimizer import EvaluatorOptimizer
+
+        llm_client = getattr(services, "llm_client", None)
+        fallback = getattr(services, "evaluator", None)
+        services.llm_evaluator = LLMEvaluator(
+            llm_client=llm_client,
+            fallback_evaluator=fallback,
+        )
+        services.evaluator_optimizer = EvaluatorOptimizer(
+            evaluator=services.llm_evaluator,
+        )
+
+    # Phase 3: output guardrail (lazy)
+    if not hasattr(services, "output_guardrail") or services.output_guardrail is None:
+        from app.services.guardrails.output_guard import OutputGuardrail
+
+        llm_client = getattr(services, "llm_client", None)
+        services.output_guardrail = OutputGuardrail(llm_client=llm_client)
+
+
+def _build_new_nodes(services) -> dict[str, Any]:
+    """Build node implementations for the Orchestrator-Workers graph.
+
+    Reuses intake_node, memory_load_node, draft_answer_node, compliance_node,
+    evaluator_node, trace_node, memory_save_node, and finalize_node from
+    _build_nodes for maximum code sharing.
+    """
+    _ensure_new_services(services)
+    legacy_nodes = _build_nodes(services)
+
+    async def input_guardrail_node(state: dict[str, Any]) -> dict[str, Any]:
+        result = await services.input_guardrail.check(
+            state.get("question", ""),
+            state.get("device_name"),
+        )
+        return {
+            "guardrail_passed": result.passed,
+            "errors": state.get("errors", [])
+            + ([] if result.passed else [result.reason or "输入护栏拦截"]),
+        }
+
+    def route_after_guardrail(state: dict[str, Any]) -> str:
+        if state.get("guardrail_passed") is False:
+            blocked = any(
+                "blocked" in str(err).lower()
+                for err in state.get("errors", [])
+            )
+            return "blocked" if blocked else "continue"
+        return "continue"
+
+    async def orchestrator_node(state: dict[str, Any]) -> dict[str, Any]:
+        decision = await services.orchestrator.classify_and_plan(
+            state["question"],
+            state.get("device_name"),
+            state.get("memory", []),
+        )
+        return {
+            "intent": decision.intent,
+            "plan": decision.dynamic_plan,
+            "needs_ai_coding": "ai_coding" in decision.workers,
+            "_orchestrator_decision": decision,
+        }
+
+    async def worker_executor_node(state: dict[str, Any]) -> dict[str, Any]:
+        decision = state.get("_orchestrator_decision")
+        if decision is None:
+            # Fallback: treat as fault_triage + sop_guidance
+            from app.schemas.orchestrator import OrchestratorDecision
+            decision = OrchestratorDecision(
+                intent="general",
+                workers=["fault_triage"],
+                reasoning="fallback",
+                priority="safety_first",
+            )
+
+        worker_outputs = await services.worker_dispatcher.dispatch(
+            decision, state, services
+        )
+
+        # Merge worker outputs back into state
+        update: dict[str, Any] = {"worker_outputs": worker_outputs}
+        merged_evidence: list[dict[str, Any]] = list(state.get("evidence", []))
+        merged_tool_calls: list[dict[str, Any]] = list(state.get("tool_calls", []))
+        merged_sop: list[str] = list(state.get("sop", []))
+
+        for output in worker_outputs:
+            if isinstance(output, dict):
+                if output.get("worker") == "fault_triage":
+                    pass  # evidence already handled by worker
+                elif output.get("worker") == "sop_guidance":
+                    merged_sop.extend(output.get("sop_steps", []))
+                elif output.get("worker") == "ai_coding":
+                    pass  # ai_coding handled by worker
+
+        # Run retrieval + ai_coding/sandbox via existing nodes for evidence
+        retrieval_update = await legacy_nodes["retrieval_node"]({**state, **update})
+        merged_evidence.extend(retrieval_update.get("evidence", []))
+        merged_tool_calls.extend(retrieval_update.get("tool_calls", []))
+
+        update["evidence"] = merged_evidence
+        update["tool_calls"] = merged_tool_calls
+        update["warnings"] = retrieval_update.get("warnings", [])
+
+        if decision.intent == "ai_coding" or "ai_coding" in decision.workers:
+            coding_update = await legacy_nodes["ai_coding_node"]({**state, **update})
+            sandbox_update = await legacy_nodes["sandbox_node"]({**state, **update, **coding_update})
+            update.update(coding_update)
+            update.update(sandbox_update)
+            merged_tool_calls.extend(sandbox_update.get("tool_calls", []))
+
+        update["tool_calls"] = merged_tool_calls
+        if merged_sop:
+            update["sop"] = merged_sop
+
+        return update
+
+    async def evaluator_optimizer_node(state: dict[str, Any]) -> dict[str, Any]:
+        return await services.evaluator_optimizer.generate_and_evaluate(
+            state, services
+        )
+
+    async def output_guardrail_node(state: dict[str, Any]) -> dict[str, Any]:
+        answer = state.get("answer", "")
+        evaluation = state.get("evaluation")
+        result = await services.output_guardrail.check(answer, evaluation)
+        modified = services.output_guardrail.apply_fixes(answer, result)
+        return {
+            "output_guardrail_issues": (
+                [result.reason] if result.reason and not result.passed else []
+            ),
+            "answer": modified if modified != answer else answer,
+        }
+
+    return {
+        "intake_node": legacy_nodes["intake_node"],
+        "input_guardrail_node": input_guardrail_node,
+        "memory_load_node": legacy_nodes["memory_load_node"],
+        "orchestrator_node": orchestrator_node,
+        "worker_executor_node": worker_executor_node,
+        "draft_answer_node": legacy_nodes["draft_answer_node"],
+        "compliance_node": legacy_nodes["compliance_node"],
+        "evaluator_node": legacy_nodes["evaluator_node"],
+        "evaluator_optimizer_node": evaluator_optimizer_node,
+        "output_guardrail_node": output_guardrail_node,
+        "trace_node": legacy_nodes["trace_node"],
+        "memory_save_node": legacy_nodes["memory_save_node"],
+        "finalize_node": legacy_nodes["finalize_node"],
+        "route_after_guardrail": route_after_guardrail,
     }
 
 

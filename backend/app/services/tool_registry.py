@@ -16,10 +16,22 @@ class ToolResult(BaseModel):
 class BaseTool(ABC):
     name: str
     description: str
+    parameters_schema: dict[str, Any] = {}
 
     @abstractmethod
     async def run(self, payload: dict[str, Any]) -> ToolResult:
         raise NotImplementedError
+
+    def to_openai_function(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters_schema
+                or {"type": "object", "properties": {}},
+            },
+        }
 
 
 class ToolRegistry:
@@ -29,8 +41,13 @@ class ToolRegistry:
     the Harness contract.
     """
 
-    def __init__(self, register_defaults: bool = True) -> None:
+    def __init__(
+        self,
+        register_defaults: bool = True,
+        llm_client: Any = None,
+    ) -> None:
         self._tools: dict[str, BaseTool] = {}
+        self._llm_client = llm_client
         if register_defaults:
             self._register_default_tools()
 
@@ -59,5 +76,5 @@ class ToolRegistry:
         from app.services.tools.manual_lookup import ManualLookupTool
 
         self.register(ManualLookupTool())
-        self.register(AICodingTool())
+        self.register(AICodingTool(llm_client=self._llm_client))
         self.register(ComplianceCheckTool())

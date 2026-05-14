@@ -20,6 +20,27 @@ class Settings(BaseSettings):
     deepseek_max_tokens: int = 2048
     run_live_llm_tests: bool = False
 
+    # ------------------------------------------------------------------
+    # Harness feature flags (Phase 0–4)
+    # Set to False to revert to legacy 13-node DAG behaviour.
+    # ------------------------------------------------------------------
+    # Phase 1
+    use_orchestrator: bool = True
+    use_input_guardrail: bool = True
+    use_real_ai_coding: bool = True
+    # Phase 2
+    use_evaluator_optimizer: bool = True
+    evaluator_max_iterations: int = 3
+    evaluator_confidence_threshold: float = 0.7
+    # Phase 3
+    use_output_guardrail: bool = True
+    trace_storage_path: str = "../data/traces"
+    trace_exporters: str = "console,json"
+    # Phase 4
+    memory_max_window: int = 20
+    memory_summary_trigger: int = 15
+    streaming_enabled: bool = True
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

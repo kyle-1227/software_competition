@@ -7,6 +7,24 @@ from app.services.tool_registry import BaseTool, ToolResult
 class ManualLookupTool(BaseTool):
     name = "manual_lookup"
     description = "Search maintenance manuals and return structured evidence."
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "question": {
+                "type": "string",
+                "description": "用户故障描述或查询问题",
+            },
+            "device_name": {
+                "type": "string",
+                "description": "设备名称（可选）",
+            },
+            "device_model": {
+                "type": "string",
+                "description": "设备型号（可选）",
+            },
+        },
+        "required": ["question"],
+    }
 
     def __init__(self, retriever: Retriever | None = None) -> None:
         self.retriever = retriever or Retriever()

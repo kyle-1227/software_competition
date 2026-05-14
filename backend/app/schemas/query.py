@@ -50,6 +50,7 @@ class EvaluationResult(BaseModel):
     is_compliant: bool
     confidence: float
     issues: list[str] = Field(default_factory=list)
+    feedback: str | None = None
 
 
 class QueryResponse(BaseModel):

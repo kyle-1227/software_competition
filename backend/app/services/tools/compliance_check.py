@@ -6,6 +6,20 @@ from app.services.tool_registry import BaseTool, ToolResult
 class ComplianceCheckTool(BaseTool):
     name = "compliance_check"
     description = "Check whether an answer includes basic maintenance safety terms."
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "answer": {
+                "type": "string",
+                "description": "待检查的回答文本",
+            },
+            "sop": {
+                "type": "string",
+                "description": "SOP 文本（answer 为空时使用）",
+            },
+        },
+        "required": [],
+    }
 
     _required_terms = ("断电", "停机", "防护", "风险")
 

@@ -2,6 +2,7 @@ from typing import Any, TypedDict
 
 
 class HarnessState(TypedDict, total=False):
+    # -- existing fields (unchanged) --
     question: str
     device_name: str | None
     device_model: str | None
@@ -22,3 +23,11 @@ class HarnessState(TypedDict, total=False):
     response: Any
     errors: list[str]
     warnings: list[str]
+    # -- Phase 0 new fields --
+    guardrail_passed: bool
+    intent: str
+    worker_outputs: list[dict[str, Any]]
+    evaluation_feedback: str
+    iteration_count: int
+    output_guardrail_issues: list[str]
+    stream_events: list[dict[str, Any]]

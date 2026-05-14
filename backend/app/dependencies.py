@@ -17,9 +17,9 @@ def _build_services() -> SimpleNamespace:
     trace_store = TraceStore()
     memory_store = MemoryStore()
     sandbox_executor = SandboxExecutor()
-    tool_registry = ToolRegistry()
     evaluator = Evaluator()
     llm_client = DeepSeekLLMClient()
+    tool_registry = ToolRegistry(llm_client=llm_client)
     services = SimpleNamespace(
         trace_store=trace_store,
         memory_store=memory_store,
