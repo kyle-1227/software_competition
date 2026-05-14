@@ -28,6 +28,7 @@ def test_query_returns_harness_trace_fields() -> None:
         "chapter",
         "section",
         "block_type",
+        "chunk_id",
     }
     assert data["tool_calls"]
     assert data["evaluation"]["confidence"] > 0

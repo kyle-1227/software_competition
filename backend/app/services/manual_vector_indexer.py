@@ -1,0 +1,228 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import re
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from llama_index.core import StorageContext, VectorStoreIndex, load_index_from_storage
+from llama_index.core.base.base_retriever import BaseRetriever
+from llama_index.core.embeddings import BaseEmbedding
+
+from app.core.config import settings
+from app.services.manual_indexer import (
+    REQUIRED_DOCUMENT_METADATA_KEYS,
+    load_manual_documents,
+)
+
+
+MANUAL_INDEX_ID = "manuals_motorcycle_engine"
+DEFAULT_INDEX_DIR = settings.data_path / "indexes" / "manuals" / "motorcycle_engine"
+TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:[#./+\-][A-Za-z0-9]+)*|[\u4e00-\u9fff]{2,}")
+
+
+class ManualHashEmbedding(BaseEmbedding):
+    """Small deterministic local embedding for offline manual index builds."""
+
+    dimensions: int = 384
+    model_name: str = "manual-local-hash-embedding"
+
+    def _get_query_embedding(self, query: str) -> list[float]:
+        return self._embed(query)
+
+    async def _aget_query_embedding(self, query: str) -> list[float]:
+        return self._embed(query)
+
+    def _get_text_embedding(self, text: str) -> list[float]:
+        return self._embed(text)
+
+    def _embed(self, text: str) -> list[float]:
+        vector = [0.0] * self.dimensions
+        tokens = _tokenize_for_embedding(text)
+        if not tokens:
+            return self._fallback_vector(text)
+
+        for token in tokens:
+            digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+            bucket = int.from_bytes(digest[:4], "big") % self.dimensions
+            sign = 1.0 if digest[4] & 1 else -1.0
+            vector[bucket] += sign
+
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm == 0:
+            return self._fallback_vector(text)
+        return [value / norm for value in vector]
+
+    def _fallback_vector(self, text: str) -> list[float]:
+        vector = [0.0] * self.dimensions
+        digest = hashlib.blake2b(text.encode("utf-8"), digest_size=8).digest()
+        bucket = int.from_bytes(digest[:4], "big") % self.dimensions
+        vector[bucket] = 1.0
+        return vector
+
+
+@dataclass(frozen=True)
+class ManualVectorIndexBuildResult:
+    chunks_path: Path
+    index_dir: Path
+    document_count: int
+    index_id: str
+    embedding_model: str
+    metadata_keys: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "chunks_path": str(self.chunks_path),
+            "index_dir": str(self.index_dir),
+            "document_count": self.document_count,
+            "index_id": self.index_id,
+            "embedding_model": self.embedding_model,
+            "metadata_keys": list(self.metadata_keys),
+        }
+
+
+def build_manual_vector_index(
+    *,
+    chunks_path: Path | None = None,
+    index_dir: Path | None = None,
+    overwrite: bool = True,
+    show_progress: bool = False,
+    embed_model: BaseEmbedding | None = None,
+) -> ManualVectorIndexBuildResult:
+    source_path = chunks_path or settings.data_path / "processed" / "manual_chunks.jsonl"
+    target_dir = index_dir or DEFAULT_INDEX_DIR
+    documents = load_manual_documents(source_path)
+    if not documents:
+        raise ValueError(f"No manual documents found in {source_path}")
+
+    embedding = embed_model or ManualHashEmbedding()
+    if overwrite:
+        _remove_existing_index_dir(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    index = VectorStoreIndex.from_documents(
+        documents,
+        embed_model=embedding,
+        transformations=[],
+        show_progress=show_progress,
+    )
+    index.set_index_id(MANUAL_INDEX_ID)
+    index.storage_context.persist(persist_dir=str(target_dir))
+
+    return ManualVectorIndexBuildResult(
+        chunks_path=source_path.resolve(),
+        index_dir=target_dir.resolve(),
+        document_count=len(documents),
+        index_id=MANUAL_INDEX_ID,
+        embedding_model=embedding.model_name,
+        metadata_keys=REQUIRED_DOCUMENT_METADATA_KEYS,
+    )
+
+
+def load_manual_vector_index(
+    *,
+    index_dir: Path | None = None,
+    embed_model: BaseEmbedding | None = None,
+) -> VectorStoreIndex:
+    target_dir = index_dir or DEFAULT_INDEX_DIR
+    embedding = embed_model or ManualHashEmbedding()
+    storage_context = StorageContext.from_defaults(persist_dir=str(target_dir))
+    return load_index_from_storage(
+        storage_context,
+        index_id=MANUAL_INDEX_ID,
+        embed_model=embedding,
+    )
+
+
+def get_manual_vector_retriever(
+    *,
+    index_dir: Path | None = None,
+    similarity_top_k: int = 5,
+    embed_model: BaseEmbedding | None = None,
+) -> BaseRetriever:
+    index = load_manual_vector_index(index_dir=index_dir, embed_model=embed_model)
+    return index.as_retriever(similarity_top_k=similarity_top_k)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Build and persist the motorcycle manual LlamaIndex vector index."
+    )
+    parser.add_argument(
+        "--chunks-path",
+        type=Path,
+        default=settings.data_path / "processed" / "manual_chunks.jsonl",
+        help="Path to manual_chunks.jsonl.",
+    )
+    parser.add_argument(
+        "--index-dir",
+        type=Path,
+        default=DEFAULT_INDEX_DIR,
+        help="Directory where the persisted LlamaIndex index will be written.",
+    )
+    parser.add_argument(
+        "--no-overwrite",
+        action="store_true",
+        help="Do not remove an existing index directory before building.",
+    )
+    parser.add_argument(
+        "--show-progress",
+        action="store_true",
+        help="Show LlamaIndex build progress.",
+    )
+    args = parser.parse_args(argv)
+
+    result = build_manual_vector_index(
+        chunks_path=args.chunks_path,
+        index_dir=args.index_dir,
+        overwrite=not args.no_overwrite,
+        show_progress=args.show_progress,
+    )
+    print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _remove_existing_index_dir(index_dir: Path) -> None:
+    resolved_target = index_dir.resolve()
+    if not resolved_target.exists():
+        return
+
+    resolved_indexes_root = (settings.data_path / "indexes").resolve()
+    if not resolved_target.is_relative_to(resolved_indexes_root):
+        raise ValueError(
+            f"Refusing to clear index directory outside {resolved_indexes_root}: "
+            f"{resolved_target}"
+        )
+    if resolved_target.exists():
+        shutil.rmtree(resolved_target)
+
+
+def _tokenize_for_embedding(text: str) -> list[str]:
+    normalized = text.lower()
+    tokens: list[str] = []
+    for match in TOKEN_RE.findall(normalized):
+        token = match.strip()
+        if not token:
+            continue
+        tokens.append(token)
+        if _is_cjk(token):
+            tokens.extend(
+                token[index : index + 2] for index in range(max(0, len(token) - 1))
+            )
+            tokens.extend(
+                token[index : index + 3] for index in range(max(0, len(token) - 2))
+            )
+    return tokens
+
+
+def _is_cjk(value: str) -> bool:
+    return all("\u4e00" <= char <= "\u9fff" for char in value)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
