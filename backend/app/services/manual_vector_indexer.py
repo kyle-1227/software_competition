@@ -86,6 +86,26 @@ class ManualVectorIndexBuildResult:
         }
 
 
+def _default_embed_model() -> BaseEmbedding:
+    """Return the best available embedding model.
+
+    Priority: SiliconFlow BGE → ManualHashEmbedding (fallback).
+    """
+    if settings.siliconflow_api_key:
+        try:
+            from app.services.embeddings.siliconflow_embedding import (
+                SiliconFlowEmbedding,
+            )
+            return SiliconFlowEmbedding(
+                api_key=settings.siliconflow_api_key,
+                base_url=settings.siliconflow_base_url,
+                model=settings.embedding_model,
+            )
+        except Exception:
+            pass
+    return ManualHashEmbedding()
+
+
 def build_manual_vector_index(
     *,
     chunks_path: Path | None = None,
@@ -100,7 +120,7 @@ def build_manual_vector_index(
     if not documents:
         raise ValueError(f"No manual documents found in {source_path}")
 
-    embedding = embed_model or ManualHashEmbedding()
+    embedding = embed_model or _default_embed_model()
     if overwrite:
         _remove_existing_index_dir(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -130,7 +150,7 @@ def load_manual_vector_index(
     embed_model: BaseEmbedding | None = None,
 ) -> VectorStoreIndex:
     target_dir = index_dir or DEFAULT_INDEX_DIR
-    embedding = embed_model or ManualHashEmbedding()
+    embedding = embed_model or _default_embed_model()
     storage_context = StorageContext.from_defaults(persist_dir=str(target_dir))
     return load_index_from_storage(
         storage_context,

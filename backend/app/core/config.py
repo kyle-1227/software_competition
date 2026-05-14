@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     memory_summary_trigger: int = 15
     streaming_enabled: bool = True
 
+    # ------------------------------------------------------------------
+    # Embedding provider (SiliconFlow BGE-large-zh-v1.5)
+    # ------------------------------------------------------------------
+    siliconflow_api_key: str | None = None
+    siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
+    embedding_model: str = "BAAI/bge-large-zh-v1.5"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
