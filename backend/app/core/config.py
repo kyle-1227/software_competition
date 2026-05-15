@@ -42,7 +42,17 @@ class Settings(BaseSettings):
     streaming_enabled: bool = True
 
     # ------------------------------------------------------------------
-    # Embedding provider (SiliconFlow BGE-large-zh-v1.5)
+    # Reranker (SiliconFlow)
+    # ------------------------------------------------------------------
+    reranker_enabled: bool = True
+    reranker_model: str = "Qwen/Qwen3-VL-Reranker-8B"
+    reranker_fallback_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_top_n: int = 5
+    reranker_retrieve_multiplier: int = 4
+    hyde_enabled: bool = False
+
+    # ------------------------------------------------------------------
+    # Embedding provider (SiliconFlow)
     # ------------------------------------------------------------------
     siliconflow_api_key: str | None = None
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"

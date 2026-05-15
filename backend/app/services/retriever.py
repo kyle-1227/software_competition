@@ -10,12 +10,13 @@ from app.services.manual_vector_indexer import (
     get_manual_vector_retriever,
 )
 
-
 DEFAULT_MANUAL_SOURCE = "维修手册_41页_分块整理.xlsx"
 
 
 class Retriever:
-    """Retriever backed only by the persisted LlamaIndex manual vector index."""
+    """Retriever backed by the persisted LlamaIndex manual vector index,
+    with optional Reranker and QueryRewriter (HyDE) support.
+    """
 
     def __init__(
         self,
@@ -23,19 +24,31 @@ class Retriever:
         index_path: Path | None = None,
         top_k: int = 5,
         vector_retriever: Any | None = None,
+        reranker: Any | None = None,
+        query_rewriter: Any | None = None,
+        retrieve_multiplier: int = 4,
     ) -> None:
-        # chunks_path is kept only for older call sites/tests. Retrieval no longer
-        # reads JSONL directly; build the vector index first instead.
         del chunks_path
         self.index_path = index_path or DEFAULT_INDEX_DIR
         self.top_k = top_k
         self._vector_retriever = vector_retriever
+        self._reranker = reranker
+        self._query_rewriter = query_rewriter
+        self._retrieve_multiplier = retrieve_multiplier
 
     async def search_evidence(
         self, question: str, device_model: str | None = None
     ) -> list[EvidenceItem]:
+        # Query rewriting (HyDE): generate hypothetical document for better retrieval
+        query = question
+        if self._query_rewriter:
+            try:
+                query = await self._query_rewriter.rewrite(question)
+            except Exception:
+                pass
+
         try:
-            nodes = self._retrieve_nodes(question)
+            nodes = self._retrieve_nodes(query)
         except Exception:
             return [_placeholder_evidence(question=question, device_model=device_model)]
 
@@ -54,12 +67,22 @@ class Retriever:
         return await self.search_evidence(question, device_model)
 
     def _retrieve_nodes(self, question: str) -> list[Any]:
+        retrieve_k = self.top_k * self._retrieve_multiplier if self._reranker else self.top_k
         if self._vector_retriever is None:
             self._vector_retriever = get_manual_vector_retriever(
                 index_dir=self.index_path,
-                similarity_top_k=self.top_k,
+                similarity_top_k=retrieve_k,
             )
-        return list(self._vector_retriever.retrieve(question))
+        nodes = list(self._vector_retriever.retrieve(question))
+
+        # Reranker: re-rank candidates by relevance, keep top_k
+        if self._reranker and len(nodes) > self.top_k:
+            docs = [_node_text(getattr(n, "node", n)) for n in nodes]
+            ranked = self._reranker.rerank(question, docs)
+            ranked.sort(key=lambda x: x[1], reverse=True)
+            nodes = [nodes[i] for i, _ in ranked[:self.top_k]]
+
+        return nodes
 
 
 def _node_to_evidence(node_with_score: Any) -> EvidenceItem:

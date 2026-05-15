@@ -384,8 +384,11 @@ def _record_metrics(
 async def _run_benchmark(
     embed_model: Any,
     embed_name: str,
+    *,
+    reranker: Any = None,
+    query_rewriter: Any = None,
 ) -> BenchmarkReport:
-    """Run all 20 questions with the given embedding model."""
+    """Run all 20 questions with the given embedding model and optional reranker/rewriter."""
     from app.services.retriever import Retriever
     from app.services.tool_registry import ToolRegistry
     from app.services.memory_store import MemoryStore
@@ -394,10 +397,12 @@ async def _run_benchmark(
     from app.services.evaluator import Evaluator
     from tests.conftest import FakeLLMResponse
 
-    # Build index with target embedding
+    # Build index with target embedding.
+    # When reranker is active, retrieve more candidates for it to re-rank.
+    retrieve_k = 20 if reranker else 5
     index_dir = _build_temp_index(embed_model)
     vector_retriever = get_manual_vector_retriever(
-        index_dir=index_dir, similarity_top_k=5, embed_model=embed_model
+        index_dir=index_dir, similarity_top_k=retrieve_k, embed_model=embed_model
     )
 
     class EvidenceEchoingLLMClient:
@@ -449,7 +454,11 @@ async def _run_benchmark(
     )
 
     # Override retriever to use our index
-    retriever = Retriever(vector_retriever=vector_retriever)
+    retriever = Retriever(
+        vector_retriever=vector_retriever,
+        reranker=reranker,
+        query_rewriter=query_rewriter,
+    )
     harness.tool_registry._tools["manual_lookup"].retriever = retriever
 
     report = BenchmarkReport(embedding_name=embed_name)
@@ -593,3 +602,72 @@ async def test_benchmark_comparison() -> None:
 
     # BGE should outperform or equal ManualHashEmbedding
     assert report_b.summary()["avg_value_hit_rate"] >= report_a.summary()["avg_value_hit_rate"] * 0.8
+
+
+@pytest.mark.anyio
+async def test_benchmark_qwen_only() -> None:
+    """Qwen embedding without reranker (baseline for reranker comparison)."""
+    from app.core.config import settings
+    from app.services.embeddings.siliconflow_embedding import (
+        SiliconFlowEmbedding,
+    )
+
+    if not settings.siliconflow_api_key:
+        pytest.skip("SILICONFLOW_API_KEY not set")
+
+    embed = SiliconFlowEmbedding()
+    report = await _run_benchmark(embed, "Qwen (no reranker)")
+
+    s = report.summary()
+    print(f"\nQwen (no reranker): {json.dumps(s, ensure_ascii=False, indent=2)}")
+    assert s["evidence_found_pct"] >= 0.5
+
+
+@pytest.mark.anyio
+async def test_benchmark_qwen_with_reranker() -> None:
+    """Qwen embedding + SiliconFlow Reranker."""
+    from app.core.config import settings
+    from app.services.embeddings.siliconflow_embedding import (
+        SiliconFlowEmbedding,
+    )
+    from app.services.reranker import SiliconFlowReranker
+
+    if not settings.siliconflow_api_key:
+        pytest.skip("SILICONFLOW_API_KEY not set")
+
+    embed = SiliconFlowEmbedding()
+    reranker = SiliconFlowReranker()
+
+    report = await _run_benchmark(embed, "Qwen + Reranker", reranker=reranker)
+
+    s = report.summary()
+    print(f"\nQwen + Reranker: {json.dumps(s, ensure_ascii=False, indent=2)}")
+    assert s["evidence_found_pct"] >= 0.5
+
+
+@pytest.mark.anyio
+async def test_benchmark_reranker_comparison() -> None:
+    """Side-by-side: Qwen-only vs Qwen+Reranker."""
+    from app.core.config import settings
+    from app.services.embeddings.siliconflow_embedding import (
+        SiliconFlowEmbedding,
+    )
+    from app.services.reranker import SiliconFlowReranker
+
+    if not settings.siliconflow_api_key:
+        pytest.skip("SILICONFLOW_API_KEY not set — cannot compare")
+
+    embed = SiliconFlowEmbedding()
+    reranker = SiliconFlowReranker()
+
+    report_no_rerank = await _run_benchmark(embed, "Qwen (no reranker)")
+    report_rerank = await _run_benchmark(
+        embed, "Qwen + Reranker", reranker=reranker
+    )
+
+    _print_comparison(report_no_rerank, report_rerank)
+
+    # Reranker should not degrade results
+    sa = report_no_rerank.summary()
+    sb = report_rerank.summary()
+    assert sb["avg_value_hit_rate"] >= sa["avg_value_hit_rate"] * 0.8
