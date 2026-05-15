@@ -75,6 +75,6 @@ class ToolRegistry:
         from app.services.tools.compliance_check import ComplianceCheckTool
         from app.services.tools.manual_lookup import ManualLookupTool
 
-        self.register(ManualLookupTool())
+        self.register(ManualLookupTool(llm_client=self._llm_client))
         self.register(AICodingTool(llm_client=self._llm_client))
         self.register(ComplianceCheckTool())

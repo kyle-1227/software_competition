@@ -321,6 +321,10 @@ def _build_nodes(services) -> dict[str, Any]:
         services.trace_store.record_plan(trace_id, state.get("plan", []))
         services.trace_store.record_evidence(trace_id, state.get("evidence", []))
         services.trace_store.record_answer(trace_id, state.get("answer", ""))
+
+        # Embedding / Reranker metadata for observability
+        _record_pipeline_meta(services, trace_id, state)
+
         if state.get("evaluation"):
             from app.schemas.query import EvaluationResult
 
@@ -344,6 +348,27 @@ def _build_nodes(services) -> dict[str, Any]:
         return {"memory": services.memory_store.get_history(state["session_id"])}
 
     async def finalize_node(state: dict[str, Any]) -> dict[str, Any]:
+        errors = state.get("errors", [])
+        # If guardrail blocked the request, return a clear rejection
+        if state.get("guardrail_passed") is False and any(
+            "blocked" in str(e).lower() or "不适当" in str(e) or "超出" in str(e)
+            for e in errors
+        ):
+            rejection = {
+                "answer": f"抱歉，无法处理此请求。{'；'.join(errors)}",
+                "plan": [],
+                "evidence": [],
+                "tool_calls": [],
+                "evaluation": None,
+                "trace_id": state.get("trace_id"),
+                "sop": [],
+                "memory": state.get("memory", []),
+                "ai_coding": None,
+                "llm_usage": None,
+                "llm_model": None,
+            }
+            return {"response": rejection, **rejection}
+
         response = {
             "answer": state.get("answer", ""),
             "plan": state.get("plan", []),
@@ -460,13 +485,7 @@ def _build_new_nodes(services) -> dict[str, Any]:
         }
 
     def route_after_guardrail(state: dict[str, Any]) -> str:
-        if state.get("guardrail_passed") is False:
-            blocked = any(
-                "blocked" in str(err).lower()
-                for err in state.get("errors", [])
-            )
-            return "blocked" if blocked else "continue"
-        return "continue"
+        return "continue" if state.get("guardrail_passed") else "blocked"
 
     async def orchestrator_node(state: dict[str, Any]) -> dict[str, Any]:
         decision = await services.orchestrator.classify_and_plan(
@@ -502,35 +521,50 @@ def _build_new_nodes(services) -> dict[str, Any]:
         merged_evidence: list[dict[str, Any]] = list(state.get("evidence", []))
         merged_tool_calls: list[dict[str, Any]] = list(state.get("tool_calls", []))
         merged_sop: list[str] = list(state.get("sop", []))
+        merged_ai_coding: dict[str, Any] | None = state.get("ai_coding")
+        merged_sandbox: dict[str, Any] | None = state.get("sandbox_result")
 
         for output in worker_outputs:
-            if isinstance(output, dict):
-                if output.get("worker") == "fault_triage":
-                    pass  # evidence already handled by worker
-                elif output.get("worker") == "sop_guidance":
-                    merged_sop.extend(output.get("sop_steps", []))
-                elif output.get("worker") == "ai_coding":
-                    pass  # ai_coding handled by worker
+            if not isinstance(output, dict):
+                continue
+            worker_name = output.get("worker", "")
 
-        # Run retrieval + ai_coding/sandbox via existing nodes for evidence
-        retrieval_update = await legacy_nodes["retrieval_node"]({**state, **update})
-        merged_evidence.extend(retrieval_update.get("evidence", []))
-        merged_tool_calls.extend(retrieval_update.get("tool_calls", []))
+            # Merge evidence
+            w_evidence = output.get("evidence", [])
+            if isinstance(w_evidence, list):
+                merged_evidence.extend(w_evidence)
+
+            # Merge tool_calls
+            w_tool_calls = output.get("tool_calls", [])
+            if isinstance(w_tool_calls, list):
+                merged_tool_calls.extend(w_tool_calls)
+
+            # Merge SOP
+            if worker_name == "sop_guidance":
+                w_sop = output.get("sop_steps", [])
+                if isinstance(w_sop, list):
+                    merged_sop.extend(w_sop)
+                # Also merge SOP-level evidence/tool_calls from SOP worker
+                if "evidence" in output:
+                    merged_sop = list(dict.fromkeys(merged_sop))  # dedupe
+
+            # Merge AI coding / sandbox
+            if worker_name == "ai_coding":
+                w_ai = output.get("ai_coding")
+                if isinstance(w_ai, dict):
+                    merged_ai_coding = w_ai
+                w_sandbox = output.get("sandbox_result")
+                if isinstance(w_sandbox, dict):
+                    merged_sandbox = w_sandbox
 
         update["evidence"] = merged_evidence
         update["tool_calls"] = merged_tool_calls
-        update["warnings"] = retrieval_update.get("warnings", [])
-
-        if decision.intent == "ai_coding" or "ai_coding" in decision.workers:
-            coding_update = await legacy_nodes["ai_coding_node"]({**state, **update})
-            sandbox_update = await legacy_nodes["sandbox_node"]({**state, **update, **coding_update})
-            update.update(coding_update)
-            update.update(sandbox_update)
-            merged_tool_calls.extend(sandbox_update.get("tool_calls", []))
-
-        update["tool_calls"] = merged_tool_calls
         if merged_sop:
             update["sop"] = merged_sop
+        if merged_ai_coding:
+            update["ai_coding"] = merged_ai_coding
+        if merged_sandbox:
+            update["sandbox_result"] = merged_sandbox
 
         return update
 
@@ -943,6 +977,40 @@ def _tool_call_dict_to_model(item: dict[str, Any]):
         status=item.get("status", "success"),
         duration_ms=item.get("duration_ms"),
     )
+
+
+def _record_pipeline_meta(services, trace_id: str, state: dict[str, Any]) -> None:
+    """Record embedding/reranker/index metadata into the trace."""
+    try:
+        from app.core.config import settings
+        from app.services.manual_vector_indexer import (
+            DEFAULT_INDEX_DIR,
+            MANUAL_INDEX_ID,
+            load_manual_vector_index,
+        )
+
+        meta_path = DEFAULT_INDEX_DIR / "index_meta.json"
+        meta: dict[str, object] = {"index_meta_available": meta_path.exists()}
+        if meta_path.exists():
+            import json
+            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["embedding_provider"] = stored.get("provider", "")
+            meta["embedding_model"] = stored.get("embedding_model", "")
+            meta["embedding_dimensions"] = stored.get("dimensions", 0)
+
+        meta["reranker_enabled"] = settings.reranker_enabled
+        if settings.reranker_enabled:
+            meta["reranker_model"] = settings.reranker_model
+        meta["hyde_enabled"] = settings.hyde_enabled
+
+        meta["evidence_count"] = len(state.get("evidence", []))
+        meta["tool_call_count"] = len(state.get("tool_calls", []))
+
+        # Attach to trace via the legacy flat dict (backward compat)
+        trace = services.trace_store._ensure_trace(trace_id)
+        trace["pipeline_meta"] = meta
+    except Exception:
+        pass
 
 
 class _NoOpCheckpointer:

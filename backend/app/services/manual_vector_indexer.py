@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import math
 import re
 import shutil
@@ -72,7 +73,10 @@ class ManualVectorIndexBuildResult:
     index_dir: Path
     document_count: int
     index_id: str
+    provider: str
     embedding_model: str
+    dimensions: int
+    chunks_sha256: str
     metadata_keys: tuple[str, ...]
 
     def as_dict(self) -> dict[str, Any]:
@@ -81,29 +85,69 @@ class ManualVectorIndexBuildResult:
             "index_dir": str(self.index_dir),
             "document_count": self.document_count,
             "index_id": self.index_id,
+            "provider": self.provider,
             "embedding_model": self.embedding_model,
+            "dimensions": self.dimensions,
+            "chunks_sha256": self.chunks_sha256,
             "metadata_keys": list(self.metadata_keys),
         }
 
+    @classmethod
+    def from_index_meta(cls, meta: dict[str, Any]) -> ManualVectorIndexBuildResult:
+        return cls(
+            chunks_path=Path(meta["chunks_path"]),
+            index_dir=Path(meta["index_dir"]),
+            document_count=int(meta["document_count"]),
+            index_id=str(meta["index_id"]),
+            provider=str(meta.get("provider", "")),
+            embedding_model=str(meta.get("embedding_model", "")),
+            dimensions=int(meta.get("dimensions", 0)),
+            chunks_sha256=str(meta.get("chunks_sha256", "")),
+            metadata_keys=tuple(meta.get("metadata_keys", [])),
+        )
+
 
 def _default_embed_model() -> BaseEmbedding:
-    """Return the best available embedding model.
+    """Return the best available embedding model, probed once.
 
-    Priority: SiliconFlow BGE → ManualHashEmbedding (fallback).
+    Probes the primary model with a short text. If it fails, falls back
+    to the next model. This ensures ALL chunks in one index use the same
+    provider + model + dimensions.
     """
     if settings.siliconflow_api_key:
-        try:
-            from app.services.embeddings.siliconflow_embedding import (
-                SiliconFlowEmbedding,
-            )
-            return SiliconFlowEmbedding(
+        from app.services.embeddings.siliconflow_embedding import (
+            SiliconFlowEmbedding,
+        )
+
+        # Try primary model
+        primary = SiliconFlowEmbedding(
+            api_key=settings.siliconflow_api_key,
+            base_url=settings.siliconflow_base_url,
+            model=settings.embedding_model,
+        )
+        if _probe_embed_model(primary):
+            return primary
+
+        # Try fallback model (BGE)
+        if primary._fallback_model and primary._fallback_model != primary.model_name:
+            fallback = SiliconFlowEmbedding(
                 api_key=settings.siliconflow_api_key,
                 base_url=settings.siliconflow_base_url,
-                model=settings.embedding_model,
+                model=primary._fallback_model,
             )
-        except Exception:
-            pass
+            if _probe_embed_model(fallback):
+                return fallback
+
     return ManualHashEmbedding()
+
+
+def _probe_embed_model(embedding: BaseEmbedding) -> bool:
+    """Test the embedding model with a short text. Returns True if it works."""
+    try:
+        result = embedding._get_text_embedding("probe: 发动机维修")
+        return isinstance(result, list) and len(result) > 0
+    except Exception:
+        return False
 
 
 def build_manual_vector_index(
@@ -134,12 +178,32 @@ def build_manual_vector_index(
     index.set_index_id(MANUAL_INDEX_ID)
     index.storage_context.persist(persist_dir=str(target_dir))
 
+    # Write index fingerprint for load-time verification
+    chunks_sha256 = _file_sha256(source_path)
+    meta = {
+        "chunks_path": str(source_path.resolve()),
+        "index_dir": str(target_dir.resolve()),
+        "document_count": len(documents),
+        "index_id": MANUAL_INDEX_ID,
+        "provider": _provider_name(embedding),
+        "embedding_model": embedding.model_name,
+        "dimensions": getattr(embedding, "dimensions", 0),
+        "chunks_sha256": chunks_sha256,
+        "metadata_keys": list(REQUIRED_DOCUMENT_METADATA_KEYS),
+    }
+    (target_dir / "index_meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
     return ManualVectorIndexBuildResult(
         chunks_path=source_path.resolve(),
         index_dir=target_dir.resolve(),
         document_count=len(documents),
         index_id=MANUAL_INDEX_ID,
+        provider=meta["provider"],
         embedding_model=embedding.model_name,
+        dimensions=meta["dimensions"],
+        chunks_sha256=chunks_sha256,
         metadata_keys=REQUIRED_DOCUMENT_METADATA_KEYS,
     )
 
@@ -151,6 +215,10 @@ def load_manual_vector_index(
 ) -> VectorStoreIndex:
     target_dir = index_dir or DEFAULT_INDEX_DIR
     embedding = embed_model or _default_embed_model()
+
+    # Verify index fingerprint against current embedding config
+    _verify_index_compat(target_dir, embedding)
+
     storage_context = StorageContext.from_defaults(persist_dir=str(target_dir))
     return load_index_from_storage(
         storage_context,
@@ -242,6 +310,39 @@ def _tokenize_for_embedding(text: str) -> list[str]:
 
 def _is_cjk(value: str) -> bool:
     return all("\u4e00" <= char <= "\u9fff" for char in value)
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _provider_name(embedding: BaseEmbedding) -> str:
+    class_name = type(embedding).__name__
+    if "SiliconFlow" in class_name:
+        return "siliconflow"
+    if "ManualHash" in class_name:
+        return "local"
+    return class_name.lower()
+
+
+def _verify_index_compat(target_dir: Path, embedding: BaseEmbedding) -> None:
+    meta_path = target_dir / "index_meta.json"
+    if not meta_path.exists():
+        return  # Legacy index, skip verification
+
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    stored_model = meta.get("embedding_model", "")
+    stored_dims = meta.get("dimensions", 0)
+    current_model = embedding.model_name
+    current_dims = getattr(embedding, "dimensions", 0)
+
+    if stored_model != current_model or stored_dims != current_dims:
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "Index fingerprint mismatch: stored=%s(%dd), current=%s(%dd). "
+            "Rebuild the index for best results.",
+            stored_model, stored_dims, current_model, current_dims,
+        )
 
 
 if __name__ == "__main__":

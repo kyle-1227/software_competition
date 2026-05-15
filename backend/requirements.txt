@@ -10,3 +10,4 @@ langgraph==0.2.76
 langchain==0.3.23
 langchain-openai==0.3.11
 openai==1.72.0
+requests==2.32.3

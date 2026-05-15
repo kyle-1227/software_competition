@@ -136,12 +136,12 @@ class SiliconFlowEmbedding(BaseEmbedding):
 
         return self._fallback_embed(text)
 
+    def _fallback_embed(self, text: str) -> list[float]:
+        from app.services.manual_vector_indexer import ManualHashEmbedding
+        return ManualHashEmbedding()._embed(text)
+
 
 def _error_code(msg: str, body: Any) -> str:
     if isinstance(body, dict):
         return f"code={body.get('code')}: {body.get('message', '')}"
     return msg[:80]
-
-    def _fallback_embed(self, text: str) -> list[float]:
-        from app.services.manual_vector_indexer import ManualHashEmbedding
-        return ManualHashEmbedding()._embed(text)

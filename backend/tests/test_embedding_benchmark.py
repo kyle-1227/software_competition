@@ -484,14 +484,17 @@ async def _run_benchmark(
 
 
 def _print_comparison(a: BenchmarkReport, b: BenchmarkReport) -> None:
-    """Print side-by-side comparison table."""
+    """Print side-by-side comparison table and persist results."""
     sa = a.summary()
     sb = b.summary()
+
+    _save_benchmark_results(a, b)
+
     print("\n" + "=" * 80)
     print("EMBEDDING BENCHMARK COMPARISON")
     print("=" * 80)
     print(
-        f"{'Metric':<30} {'ManualHashEmbedding':>22} {'BGE-large-zh-v1.5':>22}"
+        f"{'Metric':<30} {a.embedding_name:>22} {b.embedding_name:>22}"
     )
     print("-" * 80)
     for key, label in [
@@ -510,7 +513,7 @@ def _print_comparison(a: BenchmarkReport, b: BenchmarkReport) -> None:
     print("-" * 80)
 
     # Per-question value hit rate
-    print(f"\n{'ID':<25} {'Category':<12} {'Diff':<8} {'Manual':>8} {'BGE':>8}")
+    print(f"\n{'ID':<25} {'Category':<12} {'Diff':<8} {'A':>8} {'B':>8}")
     print("-" * 70)
     for ma, mb in zip(a.metrics, b.metrics):
         delta = mb.value_hit_rate - ma.value_hit_rate
@@ -520,6 +523,68 @@ def _print_comparison(a: BenchmarkReport, b: BenchmarkReport) -> None:
             f"{ma.value_hit_rate:>8.2f} {mb.value_hit_rate:>8.2f}"
         )
     print("=" * 80)
+
+
+def _save_benchmark_results(a: BenchmarkReport, b: BenchmarkReport) -> None:
+    """Persist benchmark results to JSON and comparison markdown."""
+    import json as _json
+    from pathlib import Path as _Path
+    from datetime import datetime as _datetime
+
+    evals_dir = _Path(__file__).resolve().parents[2] / "data" / "evals"
+    evals_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = _datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Per-model JSON
+    for report, suffix in [(a, "a"), (b, "b")]:
+        path = evals_dir / f"benchmark_{suffix}_{timestamp}.json"
+        path.write_text(
+            _json.dumps({
+                "embedding": report.embedding_name,
+                "summary": report.summary(),
+                "metrics": [
+                    {
+                        "id": m.question_id,
+                        "category": m.category,
+                        "difficulty": m.difficulty,
+                        "evidence_count": m.evidence_count,
+                        "top1_score": m.top1_score,
+                        "value_hit_rate": m.value_hit_rate,
+                        "confidence": m.confidence,
+                        "issues_count": m.issues_count,
+                    }
+                    for m in report.metrics
+                ],
+            }, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"Saved: {path}")
+
+    # Comparison markdown
+    sa = a.summary()
+    sb = b.summary()
+    md_lines = [
+        f"# Embedding Benchmark Comparison ({timestamp})",
+        "",
+        f"| Metric | {a.embedding_name} | {b.embedding_name} | Delta |",
+        "|--------|------|------|-------|",
+    ]
+    for key, label in [
+        ("evidence_found_pct", "evidence_found_pct"),
+        ("avg_top1_score", "avg_top1_score"),
+        ("avg_value_hit_rate", "avg_value_hit_rate"),
+        ("avg_confidence", "avg_confidence"),
+        ("avg_issues_count", "avg_issues_count"),
+    ]:
+        delta = sb[key] - sa[key]
+        arrow = "+" if delta > 0 else ("=" if delta == 0 else "-")
+        md_lines.append(
+            f"| {label} | {sa[key]:.3f} | {sb[key]:.3f} | {arrow}{abs(delta):.3f} |"
+        )
+    md_path = evals_dir / f"comparison_{timestamp}.md"
+    md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+    print(f"Saved: {md_path}")
 
 
 # ============================================================================
