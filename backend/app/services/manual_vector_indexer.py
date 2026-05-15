@@ -124,6 +124,7 @@ def _default_embed_model() -> BaseEmbedding:
             api_key=settings.siliconflow_api_key,
             base_url=settings.siliconflow_base_url,
             model=settings.embedding_model,
+            allow_runtime_fallback=False,
         )
         if _probe_embed_model(primary):
             return primary
@@ -134,6 +135,7 @@ def _default_embed_model() -> BaseEmbedding:
                 api_key=settings.siliconflow_api_key,
                 base_url=settings.siliconflow_base_url,
                 model=primary._fallback_model,
+                allow_runtime_fallback=False,
             )
             if _probe_embed_model(fallback):
                 return fallback
@@ -165,6 +167,7 @@ def build_manual_vector_index(
         raise ValueError(f"No manual documents found in {source_path}")
 
     embedding = embed_model or _default_embed_model()
+    _disable_runtime_fallback_for_build(embedding)
     if overwrite:
         _remove_existing_index_dir(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -328,21 +331,36 @@ def _provider_name(embedding: BaseEmbedding) -> str:
 def _verify_index_compat(target_dir: Path, embedding: BaseEmbedding) -> None:
     meta_path = target_dir / "index_meta.json"
     if not meta_path.exists():
-        return  # Legacy index, skip verification
+        logging.getLogger(__name__).warning(
+            "Manual vector index has no index_meta.json; allowing legacy load without "
+            "embedding compatibility verification."
+        )
+        return
 
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     stored_model = meta.get("embedding_model", "")
-    stored_dims = meta.get("dimensions", 0)
+    stored_dims = int(meta.get("dimensions", 0) or 0)
+    stored_provider = meta.get("provider", "")
     current_model = embedding.model_name
-    current_dims = getattr(embedding, "dimensions", 0)
+    current_dims = int(getattr(embedding, "dimensions", 0) or 0)
+    current_provider = _provider_name(embedding)
 
-    if stored_model != current_model or stored_dims != current_dims:
-        logger = logging.getLogger(__name__)
-        logger.warning(
-            "Index fingerprint mismatch: stored=%s(%dd), current=%s(%dd). "
-            "Rebuild the index for best results.",
-            stored_model, stored_dims, current_model, current_dims,
+    if (
+        stored_model != current_model
+        or stored_dims != current_dims
+        or stored_provider != current_provider
+    ):
+        raise RuntimeError(
+            "Embedding index mismatch: "
+            f"stored={stored_provider}/{stored_model}({stored_dims}), "
+            f"current={current_provider}/{current_model}({current_dims}). "
+            "Please rebuild the manual vector index."
         )
+
+
+def _disable_runtime_fallback_for_build(embedding: BaseEmbedding) -> None:
+    if hasattr(embedding, "_allow_runtime_fallback"):
+        setattr(embedding, "_allow_runtime_fallback", False)
 
 
 if __name__ == "__main__":

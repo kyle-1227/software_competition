@@ -50,7 +50,15 @@ class ManualLookupTool(BaseTool):
             tool_name=self.name,
             success=True,
             data=[item.model_dump(mode="json") for item in evidence],
-            metadata={"evidence_count": len(evidence)},
+            metadata={
+                "evidence_count": len(evidence),
+                "reranker_enabled": self.retriever._reranker is not None,
+                "hyde_enabled": self.retriever._query_rewriter is not None,
+                "placeholder_used": any(
+                    item.metadata.get("retriever") == "llama-index-placeholder"
+                    for item in evidence
+                ),
+            },
         )
 
 

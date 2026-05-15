@@ -42,19 +42,29 @@ class WorkerDispatcher:
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        worker_outputs: list[dict[str, Any]] = []
+        worker_results: list[dict[str, Any]] = []
         for name, result in zip(worker_names, results):
             if isinstance(result, Exception):
                 logger.error("Worker %s failed: %s", name, result)
-                worker_outputs.append(
-                    {"worker": name, "error": str(result)}
+                worker_results.append(
+                    {
+                        "worker": name,
+                        "error": str(result),
+                        "worker_outputs": [{"worker": name, "error": str(result)}],
+                    }
                 )
             elif isinstance(result, dict):
-                worker_outputs.extend(
-                    result.get("worker_outputs", [result])
+                worker_results.append(result)
+            else:
+                worker_results.append(
+                    {
+                        "worker": name,
+                        "result": result,
+                        "worker_outputs": [{"worker": name, "result": result}],
+                    }
                 )
 
-        return worker_outputs
+        return worker_results
 
     def register(self, worker: BaseWorker) -> None:
         self._workers[worker.name] = worker

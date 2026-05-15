@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from typing import Any
@@ -512,53 +513,75 @@ def _build_new_nodes(services) -> dict[str, Any]:
                 priority="safety_first",
             )
 
-        worker_outputs = await services.worker_dispatcher.dispatch(
+        worker_results = await services.worker_dispatcher.dispatch(
             decision, state, services
         )
 
-        # Merge worker outputs back into state
-        update: dict[str, Any] = {"worker_outputs": worker_outputs}
-        merged_evidence: list[dict[str, Any]] = list(state.get("evidence", []))
-        merged_tool_calls: list[dict[str, Any]] = list(state.get("tool_calls", []))
-        merged_sop: list[str] = list(state.get("sop", []))
+        worker_outputs: list[dict[str, Any]] = []
+        merged_evidence: list[dict[str, Any]] = _dedupe_evidence(state.get("evidence", []))
+        merged_tool_calls: list[dict[str, Any]] = _dedupe_tool_calls(state.get("tool_calls", []))
+        merged_sop: list[str] = _dedupe_strings(state.get("sop", []))
+        merged_warnings: list[str] = _dedupe_strings(state.get("warnings", []))
         merged_ai_coding: dict[str, Any] | None = state.get("ai_coding")
         merged_sandbox: dict[str, Any] | None = state.get("sandbox_result")
+        worker_evidence: list[dict[str, Any]] = []
 
-        for output in worker_outputs:
-            if not isinstance(output, dict):
+        for result in worker_results:
+            if not isinstance(result, dict):
                 continue
-            worker_name = output.get("worker", "")
 
-            # Merge evidence
-            w_evidence = output.get("evidence", [])
+            w_outputs = result.get("worker_outputs", [])
+            if isinstance(w_outputs, list):
+                worker_outputs.extend(item for item in w_outputs if isinstance(item, dict))
+            else:
+                worker_outputs.append(result)
+
+            w_evidence = result.get("evidence", [])
             if isinstance(w_evidence, list):
-                merged_evidence.extend(w_evidence)
+                evidence_items = [item for item in w_evidence if isinstance(item, dict)]
+                worker_evidence.extend(evidence_items)
+                merged_evidence = _dedupe_evidence(merged_evidence + evidence_items)
 
-            # Merge tool_calls
-            w_tool_calls = output.get("tool_calls", [])
+            w_tool_calls = result.get("tool_calls", [])
             if isinstance(w_tool_calls, list):
-                merged_tool_calls.extend(w_tool_calls)
+                merged_tool_calls = _dedupe_tool_calls(merged_tool_calls + w_tool_calls)
 
-            # Merge SOP
-            if worker_name == "sop_guidance":
-                w_sop = output.get("sop_steps", [])
-                if isinstance(w_sop, list):
-                    merged_sop.extend(w_sop)
-                # Also merge SOP-level evidence/tool_calls from SOP worker
-                if "evidence" in output:
-                    merged_sop = list(dict.fromkeys(merged_sop))  # dedupe
+            w_sop = result.get("sop", result.get("sop_steps", []))
+            if isinstance(w_sop, list):
+                merged_sop = _dedupe_strings(merged_sop + w_sop)
 
-            # Merge AI coding / sandbox
-            if worker_name == "ai_coding":
-                w_ai = output.get("ai_coding")
-                if isinstance(w_ai, dict):
-                    merged_ai_coding = w_ai
-                w_sandbox = output.get("sandbox_result")
-                if isinstance(w_sandbox, dict):
-                    merged_sandbox = w_sandbox
+            w_ai = result.get("ai_coding")
+            if isinstance(w_ai, dict):
+                merged_ai_coding = w_ai
+            w_sandbox = result.get("sandbox_result")
+            if isinstance(w_sandbox, dict):
+                merged_sandbox = w_sandbox
 
-        update["evidence"] = merged_evidence
-        update["tool_calls"] = merged_tool_calls
+            w_warnings = result.get("warnings", [])
+            if isinstance(w_warnings, list):
+                merged_warnings = _dedupe_strings(merged_warnings + w_warnings)
+
+        update: dict[str, Any] = {
+            "worker_outputs": worker_outputs,
+            "evidence": merged_evidence,
+            "tool_calls": merged_tool_calls,
+            "warnings": merged_warnings,
+        }
+
+        if not merged_evidence and not worker_evidence and _decision_needs_evidence(decision):
+            fallback = await legacy_nodes["retrieval_node"]({**state, **update})
+            fallback_evidence = fallback.get("evidence", [])
+            if isinstance(fallback_evidence, list):
+                update["evidence"] = _dedupe_evidence(merged_evidence + fallback_evidence)
+            fallback_tool_calls = fallback.get("tool_calls", [])
+            if isinstance(fallback_tool_calls, list):
+                update["tool_calls"] = _dedupe_tool_calls(
+                    merged_tool_calls + fallback_tool_calls
+                )
+            fallback_warnings = fallback.get("warnings", [])
+            if isinstance(fallback_warnings, list):
+                update["warnings"] = _dedupe_strings(merged_warnings + fallback_warnings)
+
         if merged_sop:
             update["sop"] = merged_sop
         if merged_ai_coding:
@@ -623,6 +646,16 @@ def _build_fallback_graph(services):
     class _FallbackGraph:
         async def ainvoke(self, state, config=None):
             del config
+            if getattr(settings, "use_input_guardrail", False):
+                nodes = _build_new_nodes(services)
+                current = await nodes["intake_node"](state)
+                current |= await nodes["input_guardrail_node"]({**state, **current})
+                if nodes["route_after_guardrail"]({**state, **current}) == "blocked":
+                    current |= await nodes["finalize_node"]({**state, **current})
+                    return current
+            return await self._ainvoke_legacy_graph(state)
+
+        async def _ainvoke_legacy_graph(self, state):
             nodes = _build_nodes(services)
             current = await nodes["intake_node"](state)
             current |= await nodes["memory_load_node"]({**state, **current})
@@ -743,6 +776,80 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if item is not None]
+
+
+def _dedupe_evidence(items: Any) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        chunk_id = metadata.get("chunk_id")
+        if chunk_id:
+            key = ("chunk_id", str(chunk_id))
+        else:
+            key = (
+                "source_page_snippet",
+                item.get("source"),
+                item.get("page"),
+                str(item.get("snippet", "")),
+            )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _dedupe_tool_calls(items: Any) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = (
+            str(item.get("tool_name", "")),
+            _stable_json(item.get("input", {})),
+            str(item.get("status", "")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _dedupe_strings(items: Any) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        deduped.append(text)
+    return deduped
+
+
+def _stable_json(value: Any) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    except TypeError:
+        return repr(value)
+
+
+def _decision_needs_evidence(decision: Any) -> bool:
+    workers = getattr(decision, "workers", [])
+    if not isinstance(workers, list):
+        return False
+    return any(worker in {"fault_triage", "sop_guidance"} for worker in workers)
 
 
 def _needs_ai_coding(question: str) -> bool:
@@ -985,15 +1092,16 @@ def _record_pipeline_meta(services, trace_id: str, state: dict[str, Any]) -> Non
         from app.core.config import settings
         from app.services.manual_vector_indexer import (
             DEFAULT_INDEX_DIR,
-            MANUAL_INDEX_ID,
-            load_manual_vector_index,
         )
 
         meta_path = DEFAULT_INDEX_DIR / "index_meta.json"
-        meta: dict[str, object] = {"index_meta_available": meta_path.exists()}
+        meta: dict[str, object] = {
+            "index_meta_available": meta_path.exists(),
+            "index_meta_loaded": False,
+        }
         if meta_path.exists():
-            import json
             stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["index_meta_loaded"] = True
             meta["embedding_provider"] = stored.get("provider", "")
             meta["embedding_model"] = stored.get("embedding_model", "")
             meta["embedding_dimensions"] = stored.get("dimensions", 0)
@@ -1005,6 +1113,12 @@ def _record_pipeline_meta(services, trace_id: str, state: dict[str, Any]) -> Non
 
         meta["evidence_count"] = len(state.get("evidence", []))
         meta["tool_call_count"] = len(state.get("tool_calls", []))
+        meta["placeholder_used"] = any(
+            isinstance(item, dict)
+            and isinstance(item.get("metadata"), dict)
+            and item["metadata"].get("retriever") == "llama-index-placeholder"
+            for item in state.get("evidence", [])
+        )
 
         # Attach to trace via the legacy flat dict (backward compat)
         trace = services.trace_store._ensure_trace(trace_id)

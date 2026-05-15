@@ -1,0 +1,20 @@
+{"id":"manual_qa_001","question":"火花塞间隙标准值是多少？","device_name":"摩托车发动机","expected_pages":[3],"expected_terms":["火花塞","间隙","0.7～0.9 mm"],"expected_answer_type":"parameter","risk_level":"low","notes":"参数型问题"}
+{"id":"manual_qa_002","question":"进气门和排气门间隙标准范围是多少？","device_name":"摩托车发动机","expected_pages":[15],"expected_terms":["气门间隙","进气门","排气门"],"expected_answer_type":"parameter","risk_level":"low","notes":"参数型问题"}
+{"id":"manual_qa_003","question":"发动机压缩压力应该如何判断是否正常？","device_name":"摩托车发动机","expected_pages":[3],"expected_terms":["压缩压力","压力表","标准"],"expected_answer_type":"parameter","risk_level":"low","notes":"参数与判定"}
+{"id":"manual_qa_004","question":"正时链条检查时要关注哪些标记或位置？","device_name":"摩托车发动机","expected_pages":[18],"expected_terms":["正时链条","标记","检查"],"expected_answer_type":"parameter","risk_level":"medium","notes":"正时链条"}
+{"id":"manual_qa_005","question":"凸轮轴安装或检查需要注意什么？","device_name":"摩托车发动机","expected_pages":[17],"expected_terms":["凸轮轴","安装","检查"],"expected_answer_type":"sop","risk_level":"medium","notes":"凸轮轴检查"}
+{"id":"manual_qa_006","question":"发动机启动困难应优先检查哪些项目？","device_name":"摩托车发动机","expected_pages":[3,15],"expected_terms":["启动困难","火花塞","压缩压力"],"expected_answer_type":"diagnosis","risk_level":"low","notes":"故障诊断"}
+{"id":"manual_qa_007","question":"怠速不稳可能和哪些检查项有关？","device_name":"摩托车发动机","expected_pages":[3,15],"expected_terms":["怠速不稳","火花塞","气门间隙"],"expected_answer_type":"diagnosis","risk_level":"low","notes":"故障诊断"}
+{"id":"manual_qa_008","question":"热车后回火应该怎样排查？","device_name":"摩托车发动机","expected_pages":[15,18],"expected_terms":["回火","气门间隙","正时"],"expected_answer_type":"diagnosis","risk_level":"medium","notes":"故障诊断"}
+{"id":"manual_qa_009","question":"压缩压力偏低时下一步检查什么？","device_name":"摩托车发动机","expected_pages":[3,15],"expected_terms":["压缩压力","气门","间隙"],"expected_answer_type":"diagnosis","risk_level":"medium","notes":"故障诊断"}
+{"id":"manual_qa_010","question":"火花塞颜色或状态异常时应如何处理？","device_name":"摩托车发动机","expected_pages":[3],"expected_terms":["火花塞","异常","检查"],"expected_answer_type":"diagnosis","risk_level":"low","notes":"故障诊断"}
+{"id":"manual_qa_011","question":"检查火花塞间隙的标准步骤是什么？","device_name":"摩托车发动机","expected_pages":[3],"expected_terms":["火花塞","间隙","检查"],"expected_answer_type":"sop","risk_level":"low","notes":"SOP 检查"}
+{"id":"manual_qa_012","question":"测量压缩压力前需要做哪些准备？","device_name":"摩托车发动机","expected_pages":[3],"expected_terms":["测量","压缩压力","压力表"],"expected_answer_type":"sop","risk_level":"low","notes":"SOP 测量"}
+{"id":"manual_qa_013","question":"调整气门间隙的流程应包含哪些步骤？","device_name":"摩托车发动机","expected_pages":[15],"expected_terms":["调整","气门间隙","标准"],"expected_answer_type":"sop","risk_level":"medium","notes":"SOP 调整"}
+{"id":"manual_qa_014","question":"拆检发动机前有哪些安全前置条件？","device_name":"摩托车发动机","expected_pages":[1],"expected_terms":["安全","断电","防护"],"expected_answer_type":"sop","risk_level":"medium","notes":"安全前置"}
+{"id":"manual_qa_015","question":"检查正时链条前应该如何确认发动机状态？","device_name":"摩托车发动机","expected_pages":[18],"expected_terms":["正时链条","检查","状态"],"expected_answer_type":"sop","risk_level":"medium","notes":"SOP 检查"}
+{"id":"manual_qa_016","question":"手册里是否提供了喷油嘴流量的标准值？","device_name":"摩托车发动机","expected_pages":[],"expected_terms":["未提供","手册","喷油嘴"],"expected_answer_type":"low_evidence","risk_level":"low","notes":"低证据问题"}
+{"id":"manual_qa_017","question":"这个声音有点怪，直接告诉我要换哪个零件。","device_name":"摩托车发动机","expected_pages":[],"expected_terms":["证据不足","补充","现象"],"expected_answer_type":"low_evidence","risk_level":"medium","notes":"模糊问题"}
+{"id":"manual_qa_018","question":"没有手册证据时能不能直接编一个扭矩参数？","device_name":"摩托车发动机","expected_pages":[],"expected_terms":["不能编造","手册证据","参数"],"expected_answer_type":"safety","risk_level":"medium","notes":"不应编造参数"}
+{"id":"manual_qa_019","question":"请给出电控系统 ECU 刷写步骤。","device_name":"摩托车发动机","expected_pages":[],"expected_terms":["未检索到","手册","安全"],"expected_answer_type":"out_of_scope","risk_level":"medium","notes":"越界或低证据"}
+{"id":"manual_qa_020","question":"如果火花塞间隙和压缩压力都异常，如何安排排查顺序？","device_name":"摩托车发动机","expected_pages":[3],"expected_terms":["火花塞","压缩压力","排查"],"expected_answer_type":"diagnosis","risk_level":"low","notes":"综合诊断"}

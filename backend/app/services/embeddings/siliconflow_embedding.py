@@ -35,6 +35,7 @@ class SiliconFlowEmbedding(BaseEmbedding):
         base_url: str | None = None,
         model: str | None = None,
         fallback_model: str = "BAAI/bge-large-zh-v1.5",
+        allow_runtime_fallback: bool = True,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -42,7 +43,9 @@ class SiliconFlowEmbedding(BaseEmbedding):
         self._base_url = (base_url or settings.siliconflow_base_url).rstrip("/")
         if model is not None:
             self.model_name = model
+        self._apply_model_specs(self.model_name)
         self._fallback_model = fallback_model
+        self._allow_runtime_fallback = allow_runtime_fallback
         self._active_model: str = self.model_name
         self._degraded: bool = False
         self._warned_fallback_exhausted: bool = False
@@ -73,13 +76,21 @@ class SiliconFlowEmbedding(BaseEmbedding):
 
     def _get_text_embeddings(self, texts: list[str]) -> list[list[float]]:
         if self._client is None:
+            if not self._allow_runtime_fallback:
+                raise RuntimeError(
+                    "SiliconFlow embedding client unavailable and runtime fallback is disabled"
+                )
             return [self._fallback_embed(t) for t in texts]
         try:
             resp = self._client.embeddings.create(
                 model=self._active_model, input=texts
             )
             return [d.embedding for d in resp.data]
-        except Exception:
+        except Exception as exc:
+            if not self._allow_runtime_fallback:
+                raise RuntimeError(
+                    "SiliconFlow embedding failed with runtime fallback disabled"
+                ) from exc
             pass
         results: list[list[float]] = []
         for t in texts:
@@ -90,6 +101,10 @@ class SiliconFlowEmbedding(BaseEmbedding):
 
     def _embed(self, text: str) -> list[float]:
         if self._client is None:
+            if not self._allow_runtime_fallback:
+                raise RuntimeError(
+                    "SiliconFlow embedding client unavailable and runtime fallback is disabled"
+                )
             return self._fallback_embed(text)
 
         model = self._active_model
@@ -105,6 +120,11 @@ class SiliconFlowEmbedding(BaseEmbedding):
             return self._handle_error(exc, text)
 
     def _handle_error(self, exc: Exception, text: str) -> list[float]:
+        if not self._allow_runtime_fallback:
+            raise RuntimeError(
+                "SiliconFlow embedding failed with runtime fallback disabled"
+            ) from exc
+
         msg = str(exc)
         try:
             body = exc.body if hasattr(exc, "body") else None  # type: ignore
@@ -120,9 +140,7 @@ class SiliconFlowEmbedding(BaseEmbedding):
                 )
                 self._active_model = self._fallback_model
                 self._degraded = True
-                dims, _, _ = _MODEL_SPECS.get(self._fallback_model, (0, 0, ""))
-                if dims:
-                    self.dimensions = dims
+                self._apply_model_specs(self._fallback_model)
                 return self._embed(text)
 
         # After degradation, silence repeated errors (the model is already in fallback)
@@ -139,6 +157,11 @@ class SiliconFlowEmbedding(BaseEmbedding):
     def _fallback_embed(self, text: str) -> list[float]:
         from app.services.manual_vector_indexer import ManualHashEmbedding
         return ManualHashEmbedding()._embed(text)
+
+    def _apply_model_specs(self, model: str) -> None:
+        dims, _, _ = _MODEL_SPECS.get(model, (0, 0, ""))
+        if dims:
+            self.dimensions = dims
 
 
 def _error_code(msg: str, body: Any) -> str:

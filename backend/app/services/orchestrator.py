@@ -116,10 +116,15 @@ class Orchestrator:
         text = getattr(response, "text", "")
         if not text:
             return self.classify_keywords(question)
+        warnings = getattr(response, "warnings", [])
+        if any("fallback" in str(warning).lower() for warning in warnings):
+            return self.classify_keywords(question)
 
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
+            return self.classify_keywords(question)
+        if "intent" not in data and "workers" not in data:
             return self.classify_keywords(question)
 
         intent = data.get("intent", "general")
