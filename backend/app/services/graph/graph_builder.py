@@ -276,7 +276,7 @@ def _build_nodes(services) -> dict[str, Any]:
             "ai_coding": None,
             "sandbox_result": None,
             "evaluation": None,
-            "loop_step": 0,
+            "loop_decision_count": 0,
             "loop_history": [],
             "tool_retry_counts": {},
             "retrieval_retry_count": 0,
@@ -1083,15 +1083,20 @@ def _string_list(value: Any) -> list[str]:
 
 
 def _loop_decision_update(state: dict[str, Any], services) -> dict[str, Any]:
-    loop_step = int(state.get("loop_step", 0) or 0) + 1
+    # Counts Agent Loop decisions, not executed actions. Actual action counts
+    # live in retrieval_retry_count, answer_regeneration_count, and retry attempts.
+    decision_count = _current_loop_decision_count(state) + 1
     policy = getattr(services, "agent_loop_policy", AgentLoopPolicy.from_settings())
     controller = getattr(services, "agent_loop_controller", AgentLoopController())
-    decision = controller.decide({**state, "loop_step": loop_step}, policy)
+    decision = controller.decide(
+        {**state, "loop_decision_count": decision_count},
+        policy,
+    )
     decision_data = decision.model_dump(mode="json")
     history = _append_loop_history(
         state,
         {
-            "step": loop_step,
+            "decision_count": decision_count,
             "action": decision.action.value,
             "reason": decision.reason,
             "target": decision.target,
@@ -1099,7 +1104,7 @@ def _loop_decision_update(state: dict[str, Any], services) -> dict[str, Any]:
         },
     )
     return {
-        "loop_step": loop_step,
+        "loop_decision_count": decision_count,
         "loop_history": history,
         "_agent_loop_decision": decision_data,
         "requires_human_approval": (
@@ -1113,6 +1118,11 @@ def _loop_decision_update(state: dict[str, Any], services) -> dict[str, Any]:
             else state.get("approval_reason")
         ),
     }
+
+
+def _current_loop_decision_count(state: dict[str, Any]) -> int:
+    value = state.get("loop_decision_count", state.get("loop_step", 0))
+    return int(value or 0)
 
 
 def _append_loop_history(
@@ -1195,6 +1205,9 @@ def _dedupe_tool_calls(items: Any) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, str]] = set()
     for item in items:
         if not isinstance(item, dict):
+            continue
+        if "attempt" in item:
+            deduped.append(item)
             continue
         key = (
             str(item.get("tool_name", "")),

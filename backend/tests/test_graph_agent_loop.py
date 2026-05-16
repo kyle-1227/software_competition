@@ -8,7 +8,11 @@ import pytest
 from app.core.config import settings
 from app.schemas.query import SandboxResult
 from app.services.agent_loop.policy import AgentLoopPolicy
-from app.services.graph.graph_builder import _build_new_graph, _build_new_nodes
+from app.services.graph.graph_builder import (
+    _build_new_graph,
+    _build_new_nodes,
+    _dedupe_tool_calls,
+)
 from app.services.tool_registry import ToolResult
 
 
@@ -96,6 +100,54 @@ def test_blocked_guardrail_skips_loop() -> None:
 
     assert guardrail_mapping["blocked"] == "finalize_node"
     assert graph.edges.count(("worker_executor_node", "loop_decision_node")) == 1
+
+
+def test_dedupe_tool_calls_preserves_retry_attempts() -> None:
+    calls = [
+        {
+            "tool_name": "manual_lookup",
+            "input": {"question": "q"},
+            "status": "failed",
+            "attempt": attempt,
+        }
+        for attempt in range(1, 6)
+    ]
+
+    deduped = _dedupe_tool_calls(calls)
+
+    assert len(deduped) == 5
+    assert [call["attempt"] for call in deduped] == [1, 2, 3, 4, 5]
+
+
+def test_dedupe_tool_calls_still_deduplicates_legacy_calls() -> None:
+    call = {
+        "tool_name": "manual_lookup",
+        "input": {"question": "q"},
+        "status": "success",
+    }
+
+    deduped = _dedupe_tool_calls([call, dict(call)])
+
+    assert deduped == [call]
+
+
+@pytest.mark.anyio
+async def test_loop_decision_count_tracks_decisions_not_actions() -> None:
+    services = _services()
+    nodes = _build_new_nodes(services)
+    state = {
+        "question": "火花塞间隙？",
+        "evidence": [_evidence()],
+        "tool_calls": [],
+    }
+
+    first = await nodes["loop_decision_node"](state)
+    second = await nodes["loop_decision_node"]({**state, **first})
+
+    assert first["loop_decision_count"] == 1
+    assert second["loop_decision_count"] == 2
+    assert [item["decision_count"] for item in second["loop_history"]] == [1, 2]
+    assert all("step" not in item for item in second["loop_history"])
 
 
 class _RecordingStateGraph:

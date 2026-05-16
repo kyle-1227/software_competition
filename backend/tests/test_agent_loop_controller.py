@@ -45,7 +45,7 @@ def test_loop_requires_approval_for_high_risk_low_evidence() -> None:
 def test_loop_fails_safe_after_max_steps() -> None:
     policy = _policy(max_loop_steps=3)
     decision = AgentLoopController().decide(
-        {"question": "q", "loop_step": 3},
+        {"question": "q", "loop_decision_count": 3},
         policy,
     )
 

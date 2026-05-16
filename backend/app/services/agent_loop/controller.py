@@ -40,7 +40,7 @@ class AgentLoopController:
                 reason="Input guardrail blocked the request",
             )
 
-        if int(state.get("loop_step", 0) or 0) >= policy.max_loop_steps:
+        if _loop_decision_count(state) >= policy.max_loop_steps:
             return AgentLoopDecision(
                 action=AgentLoopAction.FAIL_SAFE,
                 reason="达到最大 Agent Loop 步数",
@@ -121,6 +121,12 @@ def has_effective_evidence(state: dict[str, Any]) -> bool:
     if not isinstance(evidence, list):
         return False
     return any(is_effective_evidence(item) for item in evidence)
+
+
+def _loop_decision_count(state: dict[str, Any]) -> int:
+    # Compatibility: older in-flight state used loop_step for the same concept.
+    value = state.get("loop_decision_count", state.get("loop_step", 0))
+    return int(value or 0)
 
 
 def is_effective_evidence(item: Any) -> bool:
