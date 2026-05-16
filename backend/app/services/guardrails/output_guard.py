@@ -34,7 +34,7 @@ OUTPUT_GUARD_PROMPT = (
 class OutputGuardrail:
     """出口护栏：在答案返回给用户前进行最终安全检查。
 
-    与 current compliance_node 的关键区别：OutputGuardrail 会主动修复答案。
+    与 compliance_check 的关键区别：OutputGuardrail 会主动修复答案。
     """
 
     def __init__(self, llm_client: Any | None = None) -> None:

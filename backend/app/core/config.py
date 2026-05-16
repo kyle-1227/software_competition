@@ -28,7 +28,6 @@ class Settings(BaseSettings):
     use_input_guardrail: bool = True
     use_real_ai_coding: bool = True
     # Phase 2
-    use_evaluator_optimizer: bool = True
     evaluator_max_iterations: int = 3
     evaluator_confidence_threshold: float = 0.7
     # Phase 3

@@ -54,13 +54,7 @@ def build_harness_graph(services) -> Any:
 
 
 def _build_new_graph(services, StateGraph, END, checkpointer) -> Any:
-    """New Orchestrator-Workers graph (Phase 1+).
-
-    When use_evaluator_optimizer is True, uses evaluator_optimizer_node
-    (collapse draft_answer + compliance + evaluator into one iterative node).
-    When use_output_guardrail is True, inserts output_guardrail_node before trace.
-    """
-    use_eo = getattr(settings, "use_evaluator_optimizer", False)
+    """Build the Orchestrator-Workers + Bounded Agent Loop graph."""
     use_og = getattr(settings, "use_output_guardrail", False)
     graph = StateGraph(HarnessState)
     nodes = _build_new_nodes(services)
@@ -75,17 +69,9 @@ def _build_new_graph(services, StateGraph, END, checkpointer) -> Any:
     graph.add_node("approval_node", nodes["approval_node"])
     graph.add_node("clarification_node", nodes["clarification_node"])
     graph.add_node("fail_safe_node", nodes["fail_safe_node"])
-
-    if use_eo:
-        graph.add_node("evaluator_optimizer_node", nodes["evaluator_optimizer_node"])
-        graph.add_node("post_eval_loop_decision_node", nodes["post_eval_loop_decision_node"])
-        graph.add_node("answer_regeneration_node", nodes["answer_regeneration_node"])
-    else:
-        graph.add_node("draft_answer_node", nodes["draft_answer_node"])
-        graph.add_node("compliance_node", nodes["compliance_node"])
-        graph.add_node("evaluator_node", nodes["evaluator_node"])
-        graph.add_node("post_eval_loop_decision_node", nodes["post_eval_loop_decision_node"])
-        graph.add_node("answer_regeneration_node", nodes["answer_regeneration_node"])
+    graph.add_node("evaluator_optimizer_node", nodes["evaluator_optimizer_node"])
+    graph.add_node("post_eval_loop_decision_node", nodes["post_eval_loop_decision_node"])
+    graph.add_node("answer_regeneration_node", nodes["answer_regeneration_node"])
 
     if use_og:
         graph.add_node("output_guardrail_node", nodes["output_guardrail_node"])
@@ -111,92 +97,47 @@ def _build_new_graph(services, StateGraph, END, checkpointer) -> Any:
     graph.add_edge("orchestrator_node", "worker_executor_node")
     graph.add_edge("worker_executor_node", "loop_decision_node")
 
-    if use_eo:
-        graph.add_conditional_edges(
-            "loop_decision_node",
-            nodes["route_loop_decision"],
-            {
-                "retry_retrieval": "retrieval_retry_node",
-                "approval": "approval_node",
-                "clarification": "clarification_node",
-                "fail_safe": "fail_safe_node",
-                "evaluate": "evaluator_optimizer_node",
-            },
-        )
-        graph.add_conditional_edges(
-            "retrieval_retry_node",
-            nodes["route_after_retrieval_retry"],
-            {
-                "evaluate": "evaluator_optimizer_node",
-                "decide": "loop_decision_node",
-            },
-        )
-        graph.add_edge("evaluator_optimizer_node", "post_eval_loop_decision_node")
-        graph.add_conditional_edges(
-            "post_eval_loop_decision_node",
-            nodes["route_post_eval_loop_decision"],
-            {
-                "regenerate": "answer_regeneration_node",
-                "approval": "approval_node",
-                "clarification": "clarification_node",
-                "fail_safe": "fail_safe_node",
-                "output": "output_guardrail_node" if use_og else "trace_node",
-            },
-        )
-        graph.add_edge("answer_regeneration_node", "evaluator_optimizer_node")
-        if use_og:
-            graph.add_edge("approval_node", "output_guardrail_node")
-            graph.add_edge("clarification_node", "output_guardrail_node")
-            graph.add_edge("fail_safe_node", "output_guardrail_node")
-            graph.add_edge("output_guardrail_node", "trace_node")
-        else:
-            graph.add_edge("approval_node", "trace_node")
-            graph.add_edge("clarification_node", "trace_node")
-            graph.add_edge("fail_safe_node", "trace_node")
+    graph.add_conditional_edges(
+        "loop_decision_node",
+        nodes["route_loop_decision"],
+        {
+            "retry_retrieval": "retrieval_retry_node",
+            "approval": "approval_node",
+            "clarification": "clarification_node",
+            "fail_safe": "fail_safe_node",
+            "evaluate": "evaluator_optimizer_node",
+        },
+    )
+    graph.add_conditional_edges(
+        "retrieval_retry_node",
+        nodes["route_after_retrieval_retry"],
+        {
+            "evaluate": "evaluator_optimizer_node",
+            "decide": "loop_decision_node",
+        },
+    )
+    graph.add_edge("evaluator_optimizer_node", "post_eval_loop_decision_node")
+    graph.add_conditional_edges(
+        "post_eval_loop_decision_node",
+        nodes["route_post_eval_loop_decision"],
+        {
+            "regenerate": "answer_regeneration_node",
+            "approval": "approval_node",
+            "clarification": "clarification_node",
+            "fail_safe": "fail_safe_node",
+            "output": "output_guardrail_node" if use_og else "trace_node",
+        },
+    )
+    graph.add_edge("answer_regeneration_node", "evaluator_optimizer_node")
+    if use_og:
+        graph.add_edge("approval_node", "output_guardrail_node")
+        graph.add_edge("clarification_node", "output_guardrail_node")
+        graph.add_edge("fail_safe_node", "output_guardrail_node")
+        graph.add_edge("output_guardrail_node", "trace_node")
     else:
-        graph.add_conditional_edges(
-            "loop_decision_node",
-            nodes["route_loop_decision"],
-            {
-                "retry_retrieval": "retrieval_retry_node",
-                "approval": "approval_node",
-                "clarification": "clarification_node",
-                "fail_safe": "fail_safe_node",
-                "evaluate": "draft_answer_node",
-            },
-        )
-        graph.add_conditional_edges(
-            "retrieval_retry_node",
-            nodes["route_after_retrieval_retry"],
-            {
-                "evaluate": "draft_answer_node",
-                "decide": "loop_decision_node",
-            },
-        )
-        graph.add_edge("draft_answer_node", "compliance_node")
-        graph.add_edge("compliance_node", "evaluator_node")
-        graph.add_edge("evaluator_node", "post_eval_loop_decision_node")
-        graph.add_conditional_edges(
-            "post_eval_loop_decision_node",
-            nodes["route_post_eval_loop_decision"],
-            {
-                "regenerate": "answer_regeneration_node",
-                "approval": "approval_node",
-                "clarification": "clarification_node",
-                "fail_safe": "fail_safe_node",
-                "output": "output_guardrail_node" if use_og else "trace_node",
-            },
-        )
-        graph.add_edge("answer_regeneration_node", "draft_answer_node")
-        if use_og:
-            graph.add_edge("approval_node", "output_guardrail_node")
-            graph.add_edge("clarification_node", "output_guardrail_node")
-            graph.add_edge("fail_safe_node", "output_guardrail_node")
-            graph.add_edge("output_guardrail_node", "trace_node")
-        else:
-            graph.add_edge("approval_node", "trace_node")
-            graph.add_edge("clarification_node", "trace_node")
-            graph.add_edge("fail_safe_node", "trace_node")
+        graph.add_edge("approval_node", "trace_node")
+        graph.add_edge("clarification_node", "trace_node")
+        graph.add_edge("fail_safe_node", "trace_node")
 
     graph.add_edge("trace_node", "memory_save_node")
     graph.add_edge("memory_save_node", "finalize_node")
@@ -246,31 +187,6 @@ def _build_shared_nodes(services) -> dict[str, Any]:
     async def memory_load_node(state: dict[str, Any]) -> dict[str, Any]:
         history = services.memory_store.get_history(state["session_id"])
         return {"memory": history}
-
-    async def draft_answer_node(state: dict[str, Any]) -> dict[str, Any]:
-        return await _draft_answer_with_llm(services, state)
-
-    async def compliance_node(state: dict[str, Any]) -> dict[str, Any]:
-        retry_result = await execute_tool_with_retry(
-            services.tool_registry,
-            "compliance_check",
-            {"answer": state.get("answer", "")},
-        )
-        return {
-            "tool_calls": state.get("tool_calls", []) + retry_result.tool_calls,
-            "degradation_events": state.get("degradation_events", [])
-            + retry_result.degradation_events,
-        }
-
-    async def evaluator_node(state: dict[str, Any]) -> dict[str, Any]:
-        evidence = [item for item in state.get("evidence", []) if isinstance(item, dict)]
-        tool_calls = [item for item in state.get("tool_calls", []) if isinstance(item, dict)]
-        evaluation = services.evaluator.evaluate(
-            state.get("answer", ""),
-            evidence,
-            [_tool_call_dict_to_model(item) for item in tool_calls],
-        )
-        return {"evaluation": evaluation.model_dump(mode="json")}
 
     async def trace_node(state: dict[str, Any]) -> dict[str, Any]:
         trace_id = state.get("trace_id", "trace-placeholder")
@@ -358,9 +274,6 @@ def _build_shared_nodes(services) -> dict[str, Any]:
     return {
         "intake_node": intake_node,
         "memory_load_node": memory_load_node,
-        "draft_answer_node": draft_answer_node,
-        "compliance_node": compliance_node,
-        "evaluator_node": evaluator_node,
         "trace_node": trace_node,
         "memory_save_node": memory_save_node,
         "finalize_node": finalize_node,
@@ -419,9 +332,8 @@ def _ensure_new_services(services) -> None:
 def _build_new_nodes(services) -> dict[str, Any]:
     """Build node implementations for the Orchestrator-Workers graph.
 
-    Reuses intake_node, memory_load_node, draft_answer_node, compliance_node,
-    evaluator_node, trace_node, memory_save_node, and finalize_node from
-    _build_shared_nodes for maximum code sharing.
+    Reuses intake_node, memory_load_node, trace_node, memory_save_node, and
+    finalize_node from _build_shared_nodes for maximum code sharing.
     """
     _ensure_new_services(services)
     shared_nodes = _build_shared_nodes(services)
@@ -708,9 +620,6 @@ def _build_new_nodes(services) -> dict[str, Any]:
         "worker_executor_node": worker_executor_node,
         "loop_decision_node": loop_decision_node,
         "retrieval_retry_node": retrieval_retry_node,
-        "draft_answer_node": shared_nodes["draft_answer_node"],
-        "compliance_node": shared_nodes["compliance_node"],
-        "evaluator_node": shared_nodes["evaluator_node"],
         "evaluator_optimizer_node": evaluator_optimizer_node,
         "post_eval_loop_decision_node": post_eval_loop_decision_node,
         "answer_regeneration_node": answer_regeneration_node,
@@ -840,30 +749,16 @@ def _build_fallback_graph(services):
                     return await finish()
                 break
 
-            if getattr(settings, "use_evaluator_optimizer", False):
-                for _ in range(policy.max_answer_regenerations + 1):
-                    await apply("evaluator_optimizer_node")
-                    await apply("post_eval_loop_decision_node")
-                    route = nodes["route_post_eval_loop_decision"]({**state, **current})
-                    if route == "regenerate":
-                        await apply("answer_regeneration_node")
-                        continue
-                    if route in {"approval", "clarification", "fail_safe"}:
-                        await apply(f"{route}_node")
-                    break
-            else:
-                for _ in range(policy.max_answer_regenerations + 1):
-                    await apply("draft_answer_node")
-                    await apply("compliance_node")
-                    await apply("evaluator_node")
-                    await apply("post_eval_loop_decision_node")
-                    route = nodes["route_post_eval_loop_decision"]({**state, **current})
-                    if route == "regenerate":
-                        await apply("answer_regeneration_node")
-                        continue
-                    if route in {"approval", "clarification", "fail_safe"}:
-                        await apply(f"{route}_node")
-                    break
+            for _ in range(policy.max_answer_regenerations + 1):
+                await apply("evaluator_optimizer_node")
+                await apply("post_eval_loop_decision_node")
+                route = nodes["route_post_eval_loop_decision"]({**state, **current})
+                if route == "regenerate":
+                    await apply("answer_regeneration_node")
+                    continue
+                if route in {"approval", "clarification", "fail_safe"}:
+                    await apply(f"{route}_node")
+                break
 
             return await finish()
 

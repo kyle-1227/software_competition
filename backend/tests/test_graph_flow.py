@@ -118,7 +118,7 @@ async def test_graph_flow_handles_dict_response_conversion(monkeypatch) -> None:
 
 
 @pytest.mark.anyio
-async def test_draft_answer_node_calls_llm_and_returns_model_usage() -> None:
+async def test_evaluator_optimizer_calls_llm_and_returns_model_usage() -> None:
     llm_client = RecordingLLMClient(
         FakeLLMResponse(
             text="LLM 诊断建议：引用 P.3 检查火花塞间隙，先停机断电。",
@@ -154,7 +154,7 @@ async def test_draft_answer_node_calls_llm_and_returns_model_usage() -> None:
 
 
 @pytest.mark.anyio
-async def test_draft_answer_node_falls_back_when_llm_raises() -> None:
+async def test_evaluator_optimizer_falls_back_when_llm_raises() -> None:
     llm_client = RecordingLLMClient(error=RuntimeError("provider unavailable"))
     harness = AgentHarness(llm_client=llm_client)
 
@@ -169,7 +169,7 @@ async def test_draft_answer_node_falls_back_when_llm_raises() -> None:
 
 
 @pytest.mark.anyio
-async def test_draft_answer_node_uses_local_answer_for_provider_fallback_text() -> None:
+async def test_evaluator_optimizer_uses_local_answer_for_provider_fallback_text() -> None:
     llm_client = RecordingLLMClient(
         FakeLLMResponse(
             text="当前使用 deterministic fallback。上下文摘要：{}",
@@ -190,7 +190,7 @@ async def test_draft_answer_node_uses_local_answer_for_provider_fallback_text() 
 
 
 @pytest.mark.anyio
-async def test_draft_answer_node_filters_reasoning_fields_from_context_and_answer() -> None:
+async def test_evaluator_optimizer_filters_reasoning_fields_from_context_and_answer() -> None:
     llm_client = RecordingLLMClient(
         FakeLLMResponse(
             text="诊断建议：chain_of_thought reasoning_content thinking 均不应外显。引用 P.3。",

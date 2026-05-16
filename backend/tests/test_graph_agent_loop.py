@@ -5,7 +5,6 @@ from typing import Any
 
 import pytest
 
-from app.core.config import settings
 from app.schemas.query import SandboxResult
 from app.services.agent_loop.policy import AgentLoopPolicy
 from app.services.graph.graph_builder import (
@@ -16,9 +15,7 @@ from app.services.graph.graph_builder import (
 from app.services.tool_registry import ToolResult
 
 
-def test_retry_tool_not_present_in_graph_conditional_edges(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "use_evaluator_optimizer", True)
-    monkeypatch.setattr(settings, "use_output_guardrail", False)
+def test_retry_tool_not_present_in_graph_conditional_edges() -> None:
     graph = _build_new_graph(_services(), _RecordingStateGraph, "__end__", None)
 
     all_route_names = {

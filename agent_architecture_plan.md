@@ -74,9 +74,8 @@ LangGraph StateGraph
  +-- ai_coding_branch      判断是否进入 AI Coding 分支
  +-- ai_coding_node       生成 Python / SQL 脚本
  +-- sandbox_node         执行受限 Python / 只读 SQL
- +-- draft_answer_node    调用 DeepSeek V4 或 fallback 生成回答
- +-- compliance_node      调用合规检查工具
- +-- evaluator_node       生成安全/合规/置信度评估
+ +-- evaluator_optimizer_node 生成 -> compliance_check -> evaluator -> feedback regeneration
+ +-- output_guardrail_node 输出安全修复
  +-- trace_node           写入 TraceStore
  +-- memory_save_node     写入 MemoryStore 摘要
  +-- finalize_node        构造 QueryResponse
@@ -125,32 +124,23 @@ intake_node
 memory_load_node
   |
   v
-planning_stage
+orchestrator_node
   |
   v
-retrieval_node
+worker_executor_node
   |
   v
-ai_coding_branch
+loop_decision_node
   |
-  +-- needs_ai_coding = false --> draft_answer_node
+  +-- evidence 不足 --> retrieval_retry_node
   |
-  +-- needs_ai_coding = true
-          |
-          v
-      ai_coding_node
-          |
-          v
-      sandbox_node
-          |
-          v
-      draft_answer_node
+  +-- 可评估 --> evaluator_optimizer_node
   |
   v
-compliance_node
+post_eval_loop_decision_node
   |
   v
-evaluator_node
+output_guardrail_node
   |
   v
 trace_node
@@ -172,9 +162,9 @@ retrieval_node	通过 manual_lookup 获取手册 evidence
 ai_coding_branch	判断是否需要 AI Coding
 ai_coding_node	生成脚本结构 {language, script, explanation, warnings}
 sandbox_node	对 Python / SQL 做受限执行，Shell 一律拒绝
-draft_answer_node	使用 prompt + context 调用 DeepSeek V4，失败时 fallback
-compliance_node	调用 compliance_check 工具
-evaluator_node	生成 EvaluationResult
+evaluator_optimizer_node	固定答案路径：生成 -> compliance_check -> evaluator -> feedback regeneration
+post_eval_loop_decision_node	根据评估结果进行有限再生成、approval、clarification 或 fail-safe 路由
+output_guardrail_node	返回前进行输出安全修复
 trace_node	写入完整执行记录
 memory_save_node	写入会话摘要，不保存完整 trace
 finalize_node	构造前端需要的 QueryResponse
