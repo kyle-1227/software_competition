@@ -17,6 +17,7 @@ from app.services.agent_loop.policy import AgentLoopPolicy
 from app.services.agent_loop.retry import execute_tool_with_retry
 from app.services.graph.state import HarnessState
 from app.services.tracing.context import trace_span
+from app.services.tracing.helpers import summarize_span_payload
 
 logger = logging.getLogger(__name__)
 
@@ -392,6 +393,11 @@ def _retrieved_pages(evidence: list[dict[str, Any]]) -> list[Any]:
     return pages
 
 
+def _preview(value: Any, limit: int = 120) -> str:
+    text = str(value or "")
+    return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
+
 def _build_new_nodes(services) -> dict[str, Any]:
     """Build node implementations for the Orchestrator-Workers graph.
 
@@ -741,17 +747,18 @@ async def _run_manual_lookup_with_retry(
         "question": question,
         "device_name": state.get("device_name"),
         "device_model": state.get("device_model"),
+        "trace_id": state.get("trace_id"),
     }
     async with trace_span(
         getattr(services, "trace_store", None),
         state.get("trace_id"),
         "tool.manual_lookup",
         SpanKind.TOOL,
-        inputs=payload,
+        inputs=summarize_span_payload(payload),
         metadata={
             "tool_name": "manual_lookup",
             "max_retries": policy.max_tool_retries,
-            "question": question,
+            "question_preview": _preview(question),
             "device_name": state.get("device_name"),
             "device_model": state.get("device_model"),
         },
@@ -762,6 +769,8 @@ async def _run_manual_lookup_with_retry(
             payload,
             max_retries=policy.max_tool_retries,
             backoff_ms=policy.retry_backoff_ms,
+            trace_store=getattr(services, "trace_store", None),
+            trace_id=state.get("trace_id"),
         )
         evidence: list[dict[str, Any]] = []
         if (

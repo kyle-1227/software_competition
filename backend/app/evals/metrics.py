@@ -25,6 +25,12 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, float]:
         "avg_confidence": avg_confidence(results),
         "safety_pass_rate": safety_pass_rate(results),
         "avg_latency_ms": avg_latency_ms(results),
+        "avg_trace_span_count": avg_trace_span_count(results),
+        "trace_error_rate": trace_error_rate(results),
+        "degraded_tool_rate": degraded_tool_rate(results),
+        "local_llm_fallback_rate": local_llm_fallback_rate(results),
+        "approval_trace_rate": approval_trace_rate(results),
+        "fail_safe_trace_rate": fail_safe_trace_rate(results),
     }
 
 
@@ -118,6 +124,39 @@ def avg_latency_ms(results: list[dict[str, Any]]) -> float:
     )
 
 
+def avg_trace_span_count(results: list[dict[str, Any]]) -> float:
+    return _avg(
+        [
+            float(item["trace_span_count"])
+            for item in results
+            if item.get("trace_span_count") is not None
+        ]
+    )
+
+
+def trace_error_rate(results: list[dict[str, Any]]) -> float:
+    return _ratio(
+        sum(1 for item in results if int(item.get("trace_error_count") or 0) > 0),
+        len(results),
+    )
+
+
+def degraded_tool_rate(results: list[dict[str, Any]]) -> float:
+    return _flag_rate(results, "trace_has_degraded_tool")
+
+
+def local_llm_fallback_rate(results: list[dict[str, Any]]) -> float:
+    return _flag_rate(results, "trace_has_local_llm_fallback")
+
+
+def approval_trace_rate(results: list[dict[str, Any]]) -> float:
+    return _flag_rate(results, "trace_has_approval")
+
+
+def fail_safe_trace_rate(results: list[dict[str, Any]]) -> float:
+    return _flag_rate(results, "trace_has_fail_safe")
+
+
 def build_comparison_report(
     old_payload: dict[str, Any],
     new_payload: dict[str, Any],
@@ -129,6 +168,8 @@ def build_comparison_report(
 
     lines = ["# Eval Comparison", "", "## Overall Metrics", ""]
     lines.extend(_metrics_table(old_metrics, new_metrics))
+    lines.extend(["", "## Trace Observability Summary", ""])
+    lines.extend(_trace_observability_lines(new_cases.values()))
 
     improvements, regressions = _case_deltas(old_cases, new_cases)
     lines.extend(["", "## Improved Cases", ""])
@@ -244,9 +285,31 @@ def _case_summary_table(cases: Any) -> list[str]:
     return rows
 
 
+def _trace_observability_lines(cases: Any) -> list[str]:
+    case_list = [case for case in cases if isinstance(case, dict)]
+    if not case_list:
+        return ["None."]
+    degraded = sum(1 for case in case_list if case.get("trace_has_degraded_tool"))
+    local_fallback = sum(
+        1 for case in case_list if case.get("trace_has_local_llm_fallback")
+    )
+    approval = sum(1 for case in case_list if case.get("trace_has_approval"))
+    fail_safe = sum(1 for case in case_list if case.get("trace_has_fail_safe"))
+    return [
+        f"- span count: {avg_trace_span_count(case_list):.2f} average",
+        f"- degraded cases: {degraded}",
+        f"- local fallback cases: {local_fallback}",
+        f"- approval / fail-safe cases: {approval} / {fail_safe}",
+    ]
+
+
 def _ratio(numerator: int, denominator: int) -> float:
     return numerator / denominator if denominator else 0.0
 
 
 def _avg(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def _flag_rate(results: list[dict[str, Any]], key: str) -> float:
+    return _ratio(sum(1 for item in results if item.get(key)), len(results))

@@ -81,7 +81,15 @@ def _build_harness_runner(provider: str):
             if response.evaluation is not None
             else None
         )
-        return _case_result(case, evidence, response.answer, evaluation)
+        trace_id = response.trace_id
+        return _case_result(
+            case,
+            evidence,
+            response.answer,
+            evaluation,
+            trace_id=trace_id,
+            trace_summary=_trace_summary(harness.trace_store, trace_id),
+        )
 
     return _run
 
@@ -120,6 +128,9 @@ def _case_result(
     evidence: list[dict[str, Any]],
     answer: str,
     evaluation: dict[str, Any] | None,
+    *,
+    trace_id: str | None = None,
+    trace_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     retrieved_pages = [
         item.get("page")
@@ -134,6 +145,7 @@ def _case_result(
         and item["metadata"].get("retriever") == "llama-index-placeholder"
         for item in evidence
     )
+    trace_fields = trace_summary or _empty_trace_summary()
     return {
         "id": case["id"],
         "question": case["question"],
@@ -146,7 +158,71 @@ def _case_result(
         "answer": answer,
         "evaluation": evaluation,
         "latency_ms": 0,
+        "trace_id": trace_id,
+        **trace_fields,
     }
+
+
+def _trace_summary(trace_store: Any, trace_id: str | None) -> dict[str, Any]:
+    if not trace_id:
+        return _empty_trace_summary()
+    get_trace_tree = getattr(trace_store, "get_trace_tree", None)
+    if not callable(get_trace_tree):
+        return _empty_trace_summary()
+    trace = get_trace_tree(trace_id)
+    if trace is None:
+        return _empty_trace_summary()
+    spans = list(_walk_spans(trace.root_span))
+    observed_spans = [span for span in spans if span is not trace.root_span]
+    return {
+        "trace_span_count": len(observed_spans),
+        "trace_error_count": sum(
+            1
+            for span in observed_spans
+            if getattr(span.status, "value", span.status) == "error"
+        ),
+        "trace_has_degraded_tool": any(
+            span.name.startswith("tool.") and bool(span.metadata.get("degraded"))
+            for span in observed_spans
+        ),
+        "trace_has_retrieval_retry": any(
+            span.name == "node.retrieval_retry" for span in observed_spans
+        ),
+        "trace_has_local_llm_fallback": any(
+            span.name == "llm.answer_generation"
+            and (
+                bool(span.metadata.get("local_fallback"))
+                or bool(span.metadata.get("fallback_used"))
+            )
+            for span in observed_spans
+        ),
+        "trace_has_approval": any(
+            span.name == "node.approval"
+            or bool(span.metadata.get("requires_human_approval"))
+            for span in observed_spans
+        ),
+        "trace_has_fail_safe": any(
+            span.name == "node.fail_safe" for span in observed_spans
+        ),
+    }
+
+
+def _empty_trace_summary() -> dict[str, Any]:
+    return {
+        "trace_span_count": 0,
+        "trace_error_count": 0,
+        "trace_has_degraded_tool": False,
+        "trace_has_retrieval_retry": False,
+        "trace_has_local_llm_fallback": False,
+        "trace_has_approval": False,
+        "trace_has_fail_safe": False,
+    }
+
+
+def _walk_spans(span: Any):
+    yield span
+    for child in getattr(span, "children", []) or []:
+        yield from _walk_spans(child)
 
 
 def _load_eval_payload(path: Path) -> dict[str, Any]:

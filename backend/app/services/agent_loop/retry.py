@@ -7,8 +7,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.trace import SpanKind
 from app.services.agent_loop.policy import AgentLoopPolicy
 from app.services.tool_registry import ToolResult
+from app.services.tracing.context import trace_span
+from app.services.tracing.helpers import summarize_span_payload, summarize_tool_result
 
 
 class ToolRetryResult(BaseModel):
@@ -54,6 +57,9 @@ async def execute_tool_with_retry(
     *,
     max_retries: int | None = None,
     backoff_ms: list[int] | None = None,
+    trace_store: Any = None,
+    trace_id: str | None = None,
+    span_prefix: str | None = None,
 ) -> ToolRetryResult:
     policy = AgentLoopPolicy.from_settings()
     attempts_limit = max_retries or policy.max_tool_retries
@@ -64,12 +70,50 @@ async def execute_tool_with_retry(
 
     for attempt in range(1, attempts_limit + 1):
         await _sleep_for_attempt(attempt, delays)
-        started = time.perf_counter()
-        try:
-            result = await tool_registry.execute(tool_name, payload)
-        except Exception as exc:
-            result = ToolResult(tool_name=tool_name, success=False, error=str(exc))
-        duration_ms = int((time.perf_counter() - started) * 1000)
+        span_name = f"{span_prefix or f'tool.{tool_name}'}.attempt"
+        async with trace_span(
+            trace_store,
+            trace_id,
+            span_name,
+            SpanKind.TOOL,
+            inputs=summarize_span_payload(payload),
+            metadata={
+                "tool_name": tool_name,
+                "attempt": attempt,
+                "max_retries": attempts_limit,
+                "degraded": False,
+            },
+        ) as span:
+            started = time.perf_counter()
+            try:
+                result = await tool_registry.execute(tool_name, payload)
+            except Exception as exc:
+                result = ToolResult(tool_name=tool_name, success=False, error=str(exc))
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            result.metadata.setdefault("duration_ms", duration_ms)
+            status = "success" if result.success else "failed"
+            will_retry = not result.success and attempt < attempts_limit
+            attempt_metadata = {
+                "tool_name": tool_name,
+                "attempt": attempt,
+                "max_retries": attempts_limit,
+                "status": status,
+                "success": result.success,
+                "degraded": False,
+                "duration_ms": result.metadata.get("duration_ms", duration_ms),
+                "error_preview": _truncate(str(result.error), 500)
+                if result.error
+                else None,
+                "will_retry": will_retry,
+                "final_attempt": not will_retry,
+            }
+            span.set_metadata(attempt_metadata)
+            span.set_outputs(
+                {
+                    **summarize_tool_result(result),
+                    "duration_ms": attempt_metadata["duration_ms"],
+                }
+            )
         last_result = result
         last_error = result.error
         tool_calls.append(
@@ -130,6 +174,9 @@ async def execute_sandbox_with_retry(
     *,
     max_retries: int | None = None,
     backoff_ms: list[int] | None = None,
+    trace_store: Any = None,
+    trace_id: str | None = None,
+    span_prefix: str | None = None,
 ) -> ToolRetryResult:
     policy = AgentLoopPolicy.from_settings()
     attempts_limit = max_retries or policy.max_tool_retries
@@ -141,26 +188,72 @@ async def execute_sandbox_with_retry(
 
     for attempt in range(1, attempts_limit + 1):
         await _sleep_for_attempt(attempt, delays)
-        started = time.perf_counter()
-        try:
-            sandbox_result = sandbox_executor.execute(script, language)
-            data = sandbox_result.model_dump(mode="json")
-            success = bool(data.get("allowed") and data.get("return_code") == 0)
-            last_error = data.get("error") or data.get("stderr") or None
-            result = ToolResult(
-                tool_name="sandbox_execute",
-                success=success,
-                data=data,
-                error=None if success else last_error,
+        span_name = f"{span_prefix or 'sandbox.execute'}.attempt"
+        async with trace_span(
+            trace_store,
+            trace_id,
+            span_name,
+            SpanKind.SANDBOX,
+            inputs=summarize_span_payload(payload),
+            metadata={
+                "tool_name": "sandbox_execute",
+                "language": language,
+                "attempt": attempt,
+                "max_retries": attempts_limit,
+                "degraded": False,
+            },
+        ) as span:
+            started = time.perf_counter()
+            try:
+                sandbox_result = sandbox_executor.execute(script, language)
+                data = sandbox_result.model_dump(mode="json")
+                success = bool(data.get("allowed") and data.get("return_code") == 0)
+                last_error = data.get("error") or data.get("stderr") or None
+                result = ToolResult(
+                    tool_name="sandbox_execute",
+                    success=success,
+                    data=data,
+                    error=None if success else last_error,
+                )
+            except Exception as exc:
+                last_error = str(exc)
+                data = {}
+                result = ToolResult(
+                    tool_name="sandbox_execute",
+                    success=False,
+                    error=last_error,
+                )
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            result.metadata.setdefault("duration_ms", duration_ms)
+            status = "success" if result.success else "failed"
+            will_retry = not result.success and attempt < attempts_limit
+            attempt_metadata = {
+                "tool_name": "sandbox_execute",
+                "language": language,
+                "attempt": attempt,
+                "max_retries": attempts_limit,
+                "status": status,
+                "success": result.success,
+                "degraded": False,
+                "duration_ms": result.metadata.get("duration_ms", duration_ms),
+                "error_preview": _truncate(str(result.error), 500)
+                if result.error
+                else None,
+                "will_retry": will_retry,
+                "final_attempt": not will_retry,
+                "allowed": data.get("allowed"),
+                "return_code": data.get("return_code"),
+                "timeout": data.get("return_code") == 124,
+            }
+            span.set_metadata(attempt_metadata)
+            span.set_outputs(
+                {
+                    **summarize_tool_result(result),
+                    "duration_ms": attempt_metadata["duration_ms"],
+                    "allowed": data.get("allowed"),
+                    "return_code": data.get("return_code"),
+                }
             )
-        except Exception as exc:
-            last_error = str(exc)
-            result = ToolResult(
-                tool_name="sandbox_execute",
-                success=False,
-                error=last_error,
-            )
-        duration_ms = int((time.perf_counter() - started) * 1000)
         last_result = result
         tool_calls.append(
             _tool_call(
@@ -362,12 +455,31 @@ def _sanitize_payload(payload: dict[str, Any]) -> dict[str, Any]:
     safe: dict[str, Any] = {}
     for key, value in payload.items():
         lowered = key.lower()
-        if any(secret in lowered for secret in ("key", "token", "password", "authorization")):
+        if any(
+            secret in lowered
+            for secret in (
+                "key",
+                "token",
+                "password",
+                "authorization",
+                "secret",
+                "reasoning",
+                "thinking",
+                "chain_of_thought",
+                "reasoning_content",
+            )
+        ):
             safe[key] = "[redacted]"
-        elif "script" in lowered:
+        elif lowered == "answer":
             text = str(value)
-            safe["script_hash"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
-            safe["script_preview"] = _truncate(text, 120)
+            safe[key] = {
+                "answer_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "answer_length": len(text),
+            }
+        elif _is_script_key(lowered):
+            text = str(value)
+            safe[f"{lowered}_hash"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            safe[f"{lowered}_preview"] = _truncate(text, 120)
         elif isinstance(value, str):
             safe[key] = _truncate(value, 240)
         else:
@@ -379,10 +491,32 @@ def _sanitize_output(output: Any) -> Any:
     if isinstance(output, dict):
         safe = {}
         for key, value in output.items():
-            if key == "script":
+            lowered = str(key).lower()
+            if any(
+                secret in lowered
+                for secret in (
+                    "key",
+                    "token",
+                    "password",
+                    "authorization",
+                    "secret",
+                    "reasoning",
+                    "thinking",
+                    "chain_of_thought",
+                    "reasoning_content",
+                )
+            ):
+                safe[key] = "[redacted]"
+            elif lowered == "answer":
                 text = str(value)
-                safe["script_hash"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
-                safe["script_preview"] = _truncate(text, 120)
+                safe[key] = {
+                    "answer_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    "answer_length": len(text),
+                }
+            elif _is_script_key(lowered):
+                text = str(value)
+                safe[f"{lowered}_hash"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                safe[f"{lowered}_preview"] = _truncate(text, 120)
             elif isinstance(value, str):
                 safe[key] = _truncate(value, 500)
             else:
@@ -397,3 +531,11 @@ def _sanitize_output(output: Any) -> Any:
 
 def _truncate(value: str, limit: int) -> str:
     return value if len(value) <= limit else value[:limit].rstrip() + "..."
+
+
+def _is_script_key(key: str) -> bool:
+    return (
+        key in {"script", "code", "command"}
+        or "script" in key
+        or key in {"source_code", "generated_code", "shell_command"}
+    )

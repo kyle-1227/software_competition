@@ -7,11 +7,14 @@ from typing import Any
 
 from app.core.config import settings
 from app.schemas.query import EvidenceItem
+from app.schemas.trace import SpanKind
 from app.services.manual_vector_indexer import (
     DEFAULT_INDEX_DIR,
     get_manual_vector_retriever,
     _tokenize_for_embedding,
 )
+from app.services.tracing.context import trace_span
+from app.services.tracing.helpers import summarize_retrieval_result
 
 DEFAULT_MANUAL_SOURCE = "维修手册_41页_分块整理.xlsx"
 
@@ -31,6 +34,7 @@ class Retriever:
         query_rewriter: Any | None = None,
         retrieve_multiplier: int = 4,
         embed_model: Any | None = None,
+        trace_store: Any | None = None,
     ) -> None:
         del chunks_path
         self.index_path = index_path or DEFAULT_INDEX_DIR
@@ -41,45 +45,150 @@ class Retriever:
         self._query_rewriter = query_rewriter
         self._retrieve_multiplier = retrieve_multiplier
         self._embed_model = embed_model
+        self.trace_store = trace_store
 
     async def search_evidence(
-        self, question: str, device_model: str | None = None
+        self,
+        question: str,
+        device_model: str | None = None,
+        *,
+        trace_store: Any = None,
+        trace_id: str | None = None,
     ) -> list[EvidenceItem]:
+        active_trace_store = trace_store or self.trace_store
         # Query rewriting (HyDE): generate hypothetical document for better retrieval
         query = question
-        if self._query_rewriter:
+        fallback_used = False
+        async with trace_span(
+            active_trace_store,
+            trace_id,
+            "retriever.query_rewrite",
+            SpanKind.RETRIEVER,
+            inputs={
+                "query_preview": _preview(question),
+                "query_length": len(question),
+            },
+            metadata={
+                "hyde_enabled": self._query_rewriter is not None,
+                "rewriter_model": _component_name(self._query_rewriter),
+                "query_length": len(question),
+            },
+        ) as span:
+            if self._query_rewriter:
+                try:
+                    query = await self._query_rewriter.rewrite(question)
+                    fallback_used = query == question
+                except Exception:
+                    fallback_used = True
+                    query = question
+            span.set_metadata(
+                {
+                    "hyde_enabled": self._query_rewriter is not None,
+                    "rewriter_model": _component_name(self._query_rewriter),
+                    "fallback_used": fallback_used,
+                    "query_length": len(question),
+                    "rewritten_query_length": len(query),
+                }
+            )
+            span.set_outputs(
+                {
+                    "fallback_used": fallback_used,
+                    "rewritten_query_length": len(query),
+                }
+            )
+
+        vector_meta = {
+            "top_k": self.top_k,
+            **_index_trace_meta(self.index_path),
+        }
+        async with trace_span(
+            active_trace_store,
+            trace_id,
+            "retriever.vector_search",
+            SpanKind.RETRIEVER,
+            inputs={
+                "query_preview": _preview(query),
+                "query_length": len(query),
+                "device_model": device_model,
+            },
+            metadata=vector_meta,
+        ) as span:
+            retrieval_fallback_used = False
             try:
-                query = await self._query_rewriter.rewrite(question)
-            except Exception:
-                pass
-
-        try:
-            nodes = self._retrieve_nodes(query)
-        except Exception as exc:
-            if "Embedding index mismatch" in str(exc) and not _is_default_index_path(
-                self.index_path
-            ):
-                raise
-            fallback = self._keyword_fallback(question)
-            return fallback or [_placeholder_evidence(question=question, device_model=device_model)]
-
-        if not nodes:
-            fallback = self._keyword_fallback(question)
-            return fallback or [_placeholder_evidence(question=question, device_model=device_model)]
-
-        evidence = [_node_to_evidence(node) for node in nodes]
-        evidence = [item for item in evidence if item.snippet]
-        if not evidence:
-            fallback = self._keyword_fallback(question)
-            return fallback or [_placeholder_evidence(question=question, device_model=device_model)]
-        return evidence
+                nodes = await self._retrieve_nodes(
+                    query,
+                    trace_store=active_trace_store,
+                    trace_id=trace_id,
+                )
+            except Exception as exc:
+                if "Embedding index mismatch" in str(exc) and not _is_default_index_path(
+                    self.index_path
+                ):
+                    raise
+                retrieval_fallback_used = True
+                fallback = self._keyword_fallback(question)
+                evidence = fallback or [
+                    _placeholder_evidence(
+                        question=question,
+                        device_model=device_model,
+                    )
+                ]
+            else:
+                if not nodes:
+                    retrieval_fallback_used = True
+                    fallback = self._keyword_fallback(question)
+                    evidence = fallback or [
+                        _placeholder_evidence(
+                            question=question,
+                            device_model=device_model,
+                        )
+                    ]
+                else:
+                    evidence = [_node_to_evidence(node) for node in nodes]
+                    evidence = [item for item in evidence if item.snippet]
+                    if not evidence:
+                        retrieval_fallback_used = True
+                        fallback = self._keyword_fallback(question)
+                        evidence = fallback or [
+                            _placeholder_evidence(
+                                question=question,
+                                device_model=device_model,
+                            )
+                        ]
+            evidence_dicts = [item.model_dump(mode="json") for item in evidence]
+            summary = summarize_retrieval_result(evidence_dicts)
+            span.set_metadata(
+                {
+                    **vector_meta,
+                    **summary,
+                    "fallback_used": retrieval_fallback_used,
+                }
+            )
+            span.set_outputs(summary)
+            return evidence
 
     async def search(
-        self, question: str, device_model: str | None = None
+        self,
+        question: str,
+        device_model: str | None = None,
+        *,
+        trace_store: Any = None,
+        trace_id: str | None = None,
     ) -> list[EvidenceItem]:
-        return await self.search_evidence(question, device_model)
+        return await self.search_evidence(
+            question,
+            device_model,
+            trace_store=trace_store,
+            trace_id=trace_id,
+        )
 
-    def _retrieve_nodes(self, question: str) -> list[Any]:
+    async def _retrieve_nodes(
+        self,
+        question: str,
+        *,
+        trace_store: Any = None,
+        trace_id: str | None = None,
+    ) -> list[Any]:
         retrieve_k = self.top_k * self._retrieve_multiplier if self._reranker else self.top_k
         if self._vector_retriever is None:
             self._vector_retriever = get_manual_vector_retriever(
@@ -92,9 +201,43 @@ class Retriever:
         # Reranker: re-rank candidates by relevance, keep top_k
         if self._reranker and len(nodes) > self.top_k:
             docs = [_node_text(getattr(n, "node", n)) for n in nodes]
-            ranked = self._reranker.rerank(question, docs)
-            ranked.sort(key=lambda x: x[1], reverse=True)
-            nodes = [nodes[i] for i, _ in ranked[:self.top_k]]
+            async with trace_span(
+                trace_store,
+                trace_id,
+                "reranker.score",
+                SpanKind.RERANKER,
+                inputs={
+                    "query_preview": _preview(question),
+                    "candidate_count": len(docs),
+                },
+                metadata={
+                    "reranker_enabled": True,
+                    "reranker_model": getattr(self._reranker, "model", None),
+                    "candidate_count": len(docs),
+                    "top_n": getattr(self._reranker, "top_n", self.top_k),
+                },
+            ) as span:
+                ranked = self._reranker.rerank(question, docs)
+                fallback_used = _identity_ranking_used(ranked, len(docs))
+                ranked.sort(key=lambda x: x[1], reverse=True)
+                nodes = [nodes[i] for i, _ in ranked[:self.top_k]]
+                span.set_metadata(
+                    {
+                        "reranker_enabled": True,
+                        "reranker_model": getattr(self._reranker, "model", None),
+                        "candidate_count": len(docs),
+                        "top_n": getattr(self._reranker, "top_n", self.top_k),
+                        "degraded": fallback_used,
+                        "fallback_used": fallback_used,
+                    }
+                )
+                span.set_outputs(
+                    {
+                        "candidate_count": len(docs),
+                        "selected_count": len(nodes),
+                        "fallback_used": fallback_used,
+                    }
+                )
 
         return nodes
 
@@ -102,6 +245,42 @@ class Retriever:
         if not self._use_default_keyword_fallback:
             return []
         return _default_keyword_fallback(self.index_path, question, self.top_k)
+
+
+def _preview(value: Any, limit: int = 120) -> str:
+    text = str(value or "")
+    return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
+
+def _component_name(component: Any) -> str | None:
+    if component is None:
+        return None
+    return getattr(component, "model", None) or component.__class__.__name__
+
+
+def _index_trace_meta(index_path: Path) -> dict[str, Any]:
+    meta_path = index_path / "index_meta.json"
+    meta: dict[str, Any] = {
+        "embedding_provider": None,
+        "embedding_model": None,
+        "index_meta_loaded": False,
+    }
+    try:
+        if not meta_path.exists():
+            return meta
+        stored = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return meta
+    meta["index_meta_loaded"] = True
+    meta["embedding_provider"] = stored.get("provider")
+    meta["embedding_model"] = stored.get("embedding_model")
+    return meta
+
+
+def _identity_ranking_used(ranked: list[tuple[int, float]], candidate_count: int) -> bool:
+    if len(ranked) != candidate_count:
+        return False
+    return all(index == position and score == 0.0 for position, (index, score) in enumerate(ranked))
 
 
 def _node_to_evidence(node_with_score: Any) -> EvidenceItem:

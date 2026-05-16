@@ -33,19 +33,29 @@ class ManualLookupTool(BaseTool):
         self,
         retriever: Retriever | None = None,
         llm_client: Any | None = None,
+        trace_store: Any | None = None,
     ) -> None:
+        self.trace_store = trace_store
         if retriever is not None:
             self.retriever = retriever
+            if trace_store is not None:
+                setattr(self.retriever, "trace_store", trace_store)
         else:
             self.retriever = Retriever(
                 reranker=_build_reranker(),
                 query_rewriter=_build_query_rewriter(llm_client),
+                trace_store=trace_store,
             )
 
     async def run(self, payload: dict[str, Any]) -> ToolResult:
         question = str(payload.get("question", "")).strip()
         device_model = payload.get("device_model")
-        evidence = await self.retriever.search(question, device_model)
+        evidence = await self.retriever.search(
+            question,
+            device_model,
+            trace_store=self.trace_store,
+            trace_id=payload.get("trace_id"),
+        )
         return ToolResult(
             tool_name=self.name,
             success=True,

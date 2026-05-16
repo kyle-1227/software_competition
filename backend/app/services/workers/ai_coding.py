@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.schemas.trace import SpanKind
 from app.services.agent_loop.retry import (
     execute_sandbox_with_retry,
     execute_tool_with_retry,
 )
 from app.services.skills_loader import SkillsLoader
+from app.services.tracing.context import trace_span
 from app.services.workers.base import BaseWorker
 
 
@@ -40,6 +42,8 @@ class AICodingWorker(BaseWorker):
                 "question": question,
                 "language": language,
             },
+            trace_store=getattr(services, "trace_store", None),
+            trace_id=state.get("trace_id"),
         )
         coding_result = coding_retry.result
 
@@ -49,6 +53,24 @@ class AICodingWorker(BaseWorker):
             else {}
         )
         if coding_retry.degraded or not coding_retry.success:
+            async with trace_span(
+                getattr(services, "trace_store", None),
+                state.get("trace_id"),
+                "sandbox.execute.skipped",
+                SpanKind.SANDBOX,
+                inputs={"language": ai_coding_data.get("language", language)},
+                metadata={
+                    "reason": "ai_coding_degraded",
+                    "requires_human_approval": True,
+                    "degraded": True,
+                },
+            ) as span:
+                span.set_outputs(
+                    {
+                        "degraded": True,
+                        "requires_human_approval": True,
+                    }
+                )
             ai_coding_output = {
                 "language": ai_coding_data.get("language", language),
                 "script": "",
@@ -93,6 +115,8 @@ class AICodingWorker(BaseWorker):
             services.sandbox_executor,
             script,
             language,
+            trace_store=getattr(services, "trace_store", None),
+            trace_id=state.get("trace_id"),
         )
         sandbox_dict = (
             sandbox_retry.result.data

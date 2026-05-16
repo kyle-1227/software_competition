@@ -26,6 +26,7 @@ class HarnessState(TypedDict, total=False):
     # -- Phase 0 new fields --
     guardrail_passed: bool
     intent: str
+    _orchestrator_decision: Any
     worker_outputs: list[dict[str, Any]]
     evaluation_feedback: str
     iteration_count: int
@@ -42,3 +43,4 @@ class HarnessState(TypedDict, total=False):
     approval_reason: str | None
     clarification_question: str | None
     fail_safe_reason: str | None
+    _agent_loop_decision: dict[str, Any]

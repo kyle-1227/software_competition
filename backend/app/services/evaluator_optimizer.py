@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from hashlib import sha256
 from typing import Any
 
 from app.core.config import settings
@@ -51,10 +52,26 @@ class EvaluatorOptimizer:
                 else 0.0
             )
             tool_calls = result.get("tool_calls", [])
+            compliance_attempts = max(
+                [
+                    int(call.get("attempt") or 0)
+                    for call in tool_calls
+                    if isinstance(call, dict)
+                    and call.get("tool_name") == "compliance_check"
+                ]
+                or [0]
+            )
             compliance_degraded = any(
                 isinstance(call, dict)
                 and call.get("tool_name") == "compliance_check"
                 and call.get("degraded")
+                for call in tool_calls
+            )
+            compliance_success = any(
+                isinstance(call, dict)
+                and call.get("tool_name") == "compliance_check"
+                and call.get("status") == "success"
+                and not call.get("degraded")
                 for call in tool_calls
             )
             span.set_metadata(
@@ -68,6 +85,8 @@ class EvaluatorOptimizer:
                     "final_confidence": confidence,
                     "issues_count": len(issues),
                     "compliance_degraded": compliance_degraded,
+                    "compliance_attempts": compliance_attempts,
+                    "compliance_success": compliance_success,
                     "answer_regeneration_count": state.get(
                         "answer_regeneration_count", 0
                     ),
@@ -131,6 +150,8 @@ class EvaluatorOptimizer:
                 services.tool_registry,
                 "compliance_check",
                 {"answer": best_answer},
+                trace_store=getattr(services, "trace_store", None),
+                trace_id=state.get("trace_id"),
             )
             compliance_result = compliance_retry.result
 
@@ -162,7 +183,7 @@ class EvaluatorOptimizer:
         # Build tool_call for compliance check
         compliance_tc = {
             "tool_name": "compliance_check",
-            "input": {"answer": best_answer[:200]},
+            "input": {"answer": _answer_summary(best_answer)},
             "output": (
                 compliance_result.data
                 if compliance_result is not None and compliance_result.success
@@ -195,3 +216,11 @@ class EvaluatorOptimizer:
             "degradation_events": state.get("degradation_events", [])
             + retry_events,
         }
+
+
+def _answer_summary(answer: str) -> dict[str, Any]:
+    text = str(answer or "")
+    return {
+        "answer_hash": sha256(text.encode("utf-8")).hexdigest(),
+        "answer_length": len(text),
+    }

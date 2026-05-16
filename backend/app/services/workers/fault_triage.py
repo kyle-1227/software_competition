@@ -35,7 +35,10 @@ class FaultTriageWorker(BaseWorker):
                 "question": question,
                 "device_name": device_name,
                 "device_model": device_model,
+                "trace_id": state.get("trace_id"),
             },
+            trace_store=getattr(services, "trace_store", None),
+            trace_id=state.get("trace_id"),
         )
         result = retry_result.result
 

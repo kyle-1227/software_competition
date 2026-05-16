@@ -31,6 +31,7 @@ class AgentHarness:
         self.evaluator = evaluator or Evaluator()
         self.llm_client = llm_client or DeepSeekLLMClient()
         self.services = services or self._build_services()
+        self._bind_trace_store_to_tools()
         self.graph = graph or build_harness_graph(self.services)
 
     async def answer(self, payload: QueryRequest) -> QueryResponse:
@@ -103,6 +104,24 @@ class AgentHarness:
         )
         services.agent_harness = self
         return services
+
+    def _bind_trace_store_to_tools(self) -> None:
+        trace_store = getattr(self.services, "trace_store", self.trace_store)
+        registry = getattr(self.services, "tool_registry", self.tool_registry)
+        get_tool = getattr(registry, "get", None)
+        if not callable(get_tool):
+            return
+        try:
+            manual_lookup = get_tool("manual_lookup")
+        except Exception:
+            return
+        try:
+            setattr(manual_lookup, "trace_store", trace_store)
+            retriever = getattr(manual_lookup, "retriever", None)
+            if retriever is not None:
+                setattr(retriever, "trace_store", trace_store)
+        except Exception:
+            return
 
     async def answer_stream(self, payload: QueryRequest):
         """Stream intermediate states as Server-Sent Events.

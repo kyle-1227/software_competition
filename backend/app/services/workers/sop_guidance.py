@@ -41,7 +41,10 @@ class SOPGuidanceWorker(BaseWorker):
                     "question": question,
                     "device_name": state.get("device_name"),
                     "device_model": state.get("device_model"),
+                    "trace_id": state.get("trace_id"),
                 },
+                trace_store=getattr(services, "trace_store", None),
+                trace_id=state.get("trace_id"),
             )
             result = retry_result.result
             tool_calls = retry_result.tool_calls
