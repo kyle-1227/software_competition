@@ -149,6 +149,28 @@ Trace span coverage now feeds a small usage layer for debugging, demos, and eval
 
 Safety boundary: these outputs do not include full prompts, answers, scripts, large evidence, API keys, tokens, passwords, secrets, or reasoning/thinking fields.
 
+## Trace Export & API
+
+Closed traces can be exported by id for local debugging, eval failure review, frontend trace display, and competition demos.
+
+CLI:
+
+```bash
+python -m app.evals.export_trace --trace-id <id> --format summary
+python -m app.evals.export_trace --trace-id <id> --format timeline
+python -m app.evals.export_trace --trace-id <id> --format raw --pretty
+```
+
+API:
+
+```text
+GET /api/traces/{trace_id}
+GET /api/traces/{trace_id}/summary
+GET /api/traces/{trace_id}/timeline
+```
+
+The raw export is sanitized before output and follows the same safety boundary as the summary and timeline.
+
 ## 下一步目标
 
 1. 将真实 PDF 解析接入 `ManualIndexer`。
