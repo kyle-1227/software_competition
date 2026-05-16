@@ -139,6 +139,16 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 pytest backend/tests
 ```
 
+## Trace Usage Layer
+
+Trace span coverage now feeds a small usage layer for debugging, demos, and eval review.
+
+- Trace Summary: `app.services.tracing.summary.build_trace_summary(trace)` returns a compact structured view of span count, errors, slow spans, retrieval pages, tool degradation, LLM fallback, evaluator confidence, approval, and fail-safe signals.
+- Trace Timeline: `app.services.tracing.timeline.build_trace_timeline(trace)` exports a Markdown timeline sorted by span start time, using only safe summary fields.
+- Eval Failure Analysis: `app.services.tracing.analysis.analyze_eval_case_trace(case_result, trace_summary)` links failed eval cases to likely causes such as retrieval miss, missing index placeholder, tool degradation, LLM fallback, low evaluator confidence, approval gate, or fail-safe.
+
+Safety boundary: these outputs do not include full prompts, answers, scripts, large evidence, API keys, tokens, passwords, secrets, or reasoning/thinking fields.
+
 ## 下一步目标
 
 1. 将真实 PDF 解析接入 `ManualIndexer`。

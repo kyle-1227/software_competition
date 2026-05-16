@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.evals.metrics import build_comparison_report, compute_metrics, load_cases
+from app.services.tracing.summary import build_trace_summary
 
 DATASET_PATH = Path(__file__).parent / "datasets" / "manual_qa_20.jsonl"
 
@@ -82,6 +83,7 @@ def _build_harness_runner(provider: str):
             else None
         )
         trace_id = response.trace_id
+        trace = _get_trace_tree(harness.trace_store, trace_id)
         return _case_result(
             case,
             evidence,
@@ -89,6 +91,7 @@ def _build_harness_runner(provider: str):
             evaluation,
             trace_id=trace_id,
             trace_summary=_trace_summary(harness.trace_store, trace_id),
+            trace_usage_summary=build_trace_summary(trace),
         )
 
     return _run
@@ -131,6 +134,7 @@ def _case_result(
     *,
     trace_id: str | None = None,
     trace_summary: dict[str, Any] | None = None,
+    trace_usage_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     retrieved_pages = [
         item.get("page")
@@ -159,6 +163,7 @@ def _case_result(
         "evaluation": evaluation,
         "latency_ms": 0,
         "trace_id": trace_id,
+        "trace_summary": trace_usage_summary or build_trace_summary(None),
         **trace_fields,
     }
 
@@ -166,10 +171,7 @@ def _case_result(
 def _trace_summary(trace_store: Any, trace_id: str | None) -> dict[str, Any]:
     if not trace_id:
         return _empty_trace_summary()
-    get_trace_tree = getattr(trace_store, "get_trace_tree", None)
-    if not callable(get_trace_tree):
-        return _empty_trace_summary()
-    trace = get_trace_tree(trace_id)
+    trace = _get_trace_tree(trace_store, trace_id)
     if trace is None:
         return _empty_trace_summary()
     spans = list(_walk_spans(trace.root_span))
@@ -217,6 +219,15 @@ def _empty_trace_summary() -> dict[str, Any]:
         "trace_has_approval": False,
         "trace_has_fail_safe": False,
     }
+
+
+def _get_trace_tree(trace_store: Any, trace_id: str | None) -> Any:
+    if not trace_id:
+        return None
+    get_trace_tree = getattr(trace_store, "get_trace_tree", None)
+    if not callable(get_trace_tree):
+        return None
+    return get_trace_tree(trace_id)
 
 
 def _walk_spans(span: Any):

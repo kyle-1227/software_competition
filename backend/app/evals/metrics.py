@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from app.services.tracing.analysis import analyze_eval_case_trace
+
 
 def load_cases(path: Path) -> list[dict[str, Any]]:
     return [
@@ -176,6 +178,8 @@ def build_comparison_report(
     lines.extend(_case_delta_lines(improvements))
     lines.extend(["", "## Regressed Cases", ""])
     lines.extend(_case_delta_lines(regressions))
+    lines.extend(["", "## Failed Case Trace Analysis", ""])
+    lines.extend(_failed_case_trace_analysis_lines(new_cases, regressions))
     lines.extend(["", "## Placeholder Cases", ""])
     placeholder_cases = [
         case for case in new_cases.values() if case.get("placeholder_used")
@@ -301,6 +305,106 @@ def _trace_observability_lines(cases: Any) -> list[str]:
         f"- local fallback cases: {local_fallback}",
         f"- approval / fail-safe cases: {approval} / {fail_safe}",
     ]
+
+
+def _failed_case_trace_analysis_lines(
+    new_cases: dict[str, dict[str, Any]],
+    regressions: list[tuple[str, float]],
+) -> list[str]:
+    candidates = _failed_case_candidates(new_cases, regressions)
+    if not candidates:
+        return ["None."]
+
+    lines: list[str] = []
+    for case in candidates[:10]:
+        analysis = analyze_eval_case_trace(
+            case,
+            case.get("trace_summary") if isinstance(case.get("trace_summary"), dict) else {},
+        )
+        lines.append(f"### {case.get('id')}")
+        lines.append(f"- likely root cause: {analysis.get('likely_root_cause')}")
+        lines.append("- signals:")
+        for signal in analysis.get("signals", [])[:5]:
+            lines.append(f"  - {signal}")
+        lines.append(f"- recommended action: {analysis.get('recommended_action')}")
+        lines.append(f"- trace_id: {case.get('trace_id') or ''}")
+        lines.append("")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def _failed_case_candidates(
+    new_cases: dict[str, dict[str, Any]],
+    regressions: list[tuple[str, float]],
+) -> list[dict[str, Any]]:
+    ordered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for case in new_cases.values():
+        if _is_failed_case(case):
+            _append_case(ordered, seen, case)
+
+    for case_id, _delta in regressions:
+        case = new_cases.get(case_id)
+        if case is not None:
+            _append_case(ordered, seen, case)
+
+    return ordered
+
+
+def _is_failed_case(case: dict[str, Any]) -> bool:
+    if case.get("placeholder_used"):
+        return True
+    expected_terms = [str(term) for term in case.get("expected_terms", []) if str(term)]
+    matched_terms = {str(term) for term in case.get("matched_terms", [])}
+    if expected_terms and any(term not in matched_terms for term in expected_terms):
+        return True
+    expected_pages = {
+        int(page) for page in case.get("expected_pages", []) if page is not None
+    }
+    retrieved_pages = [
+        int(page)
+        for page in case.get("retrieved_pages", [])[:3]
+        if page is not None
+    ]
+    if expected_pages and not expected_pages.intersection(retrieved_pages):
+        return True
+    confidence = _case_confidence(case)
+    if confidence is not None and confidence < 0.7:
+        return True
+    return bool(case.get("trace_has_fail_safe") or case.get("trace_has_degraded_tool"))
+
+
+def _append_case(
+    ordered: list[dict[str, Any]],
+    seen: set[str],
+    case: dict[str, Any],
+) -> None:
+    case_id = str(case.get("id") or "")
+    if not case_id or case_id in seen:
+        return
+    seen.add(case_id)
+    ordered.append(case)
+
+
+def _case_confidence(case: dict[str, Any]) -> float | None:
+    trace_summary = case.get("trace_summary")
+    if isinstance(trace_summary, dict):
+        evaluator = trace_summary.get("evaluator")
+        if isinstance(evaluator, dict) and evaluator.get("confidence") is not None:
+            return _safe_float(evaluator.get("confidence"))
+    evaluation = case.get("evaluation")
+    if isinstance(evaluation, dict) and evaluation.get("confidence") is not None:
+        return _safe_float(evaluation.get("confidence"))
+    return None
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _ratio(numerator: int, denominator: int) -> float:
