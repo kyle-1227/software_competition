@@ -5,6 +5,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.schemas.query import EvaluationResult
+from app.services.agent_loop.retry import execute_tool_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,8 @@ class EvaluatorOptimizer:
         best_eval: EvaluationResult | None = None
         best_confidence = 0.0
         iteration_count = 0
+        compliance_retry = None
+        compliance_result = None
 
         for iteration in range(max_iterations):
             iteration_count = iteration + 1
@@ -67,9 +70,12 @@ class EvaluatorOptimizer:
                 continue
 
             # Run compliance check
-            compliance_result = await services.tool_registry.execute(
-                "compliance_check", {"answer": best_answer}
+            compliance_retry = await execute_tool_with_retry(
+                services.tool_registry,
+                "compliance_check",
+                {"answer": best_answer},
             )
+            compliance_result = compliance_retry.result
 
             # Evaluate
             evaluation = await self._evaluator.evaluate(
@@ -100,15 +106,35 @@ class EvaluatorOptimizer:
         compliance_tc = {
             "tool_name": "compliance_check",
             "input": {"answer": best_answer[:200]},
-            "output": compliance_result.data if compliance_result.success else {"error": compliance_result.error},
-            "status": "success" if compliance_result.success else "failed",
-            "duration_ms": compliance_result.metadata.get("duration_ms"),
+            "output": (
+                compliance_result.data
+                if compliance_result is not None and compliance_result.success
+                else {"error": compliance_result.error if compliance_result else "unknown"}
+            ),
+            "status": (
+                "success"
+                if compliance_result is not None and compliance_result.success
+                else "failed"
+            ),
+            "duration_ms": (
+                compliance_result.metadata.get("duration_ms")
+                if compliance_result is not None
+                else None
+            ),
+            "degraded": compliance_retry.degraded if compliance_retry is not None else False,
+            "attempt": compliance_retry.attempts if compliance_retry is not None else None,
         }
+        retry_tool_calls = compliance_retry.tool_calls if compliance_retry is not None else []
+        retry_events = (
+            compliance_retry.degradation_events if compliance_retry is not None else []
+        )
 
         return {
             "answer": best_answer,
             "evaluation": best_eval.model_dump(mode="json"),
             "iteration_count": iteration_count,
             "evaluation_feedback": best_eval.feedback or "",
-            "tool_calls": state.get("tool_calls", []) + [compliance_tc],
+            "tool_calls": state.get("tool_calls", []) + retry_tool_calls + [compliance_tc],
+            "degradation_events": state.get("degradation_events", [])
+            + retry_events,
         }

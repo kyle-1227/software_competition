@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.agent_loop.retry import (
+    execute_sandbox_with_retry,
+    execute_tool_with_retry,
+)
 from app.services.skills_loader import SkillsLoader
 from app.services.workers.base import BaseWorker
 
@@ -27,8 +31,9 @@ class AICodingWorker(BaseWorker):
         # 1. Determine language
         language = self._infer_language(question, state)
 
-        # 2. Generate script via ai_coding tool
-        coding_result = await services.tool_registry.execute(
+        # 2. Generate script via ai_coding tool, with bounded retry.
+        coding_retry = await execute_tool_with_retry(
+            services.tool_registry,
             "ai_coding",
             {
                 "task": question,
@@ -36,43 +41,85 @@ class AICodingWorker(BaseWorker):
                 "language": language,
             },
         )
+        coding_result = coding_retry.result
 
         ai_coding_data = (
             coding_result.data
-            if isinstance(coding_result.data, dict)
+            if coding_result is not None and isinstance(coding_result.data, dict)
             else {}
         )
+        if coding_retry.degraded or not coding_retry.success:
+            ai_coding_output = {
+                "language": ai_coding_data.get("language", language),
+                "script": "",
+                "script_preview": "",
+                "script_hash": None,
+                "explanation": ai_coding_data.get(
+                    "explanation", "脚本生成失败，需要人工确认。"
+                ),
+                "warnings": ai_coding_data.get(
+                    "warnings", ["脚本生成连续失败，未进入 sandbox 执行。"]
+                ),
+                "degraded": True,
+                "requires_human_approval": True,
+            }
+            return {
+                "ai_coding": ai_coding_output,
+                "tool_calls": coding_retry.tool_calls,
+                "worker_outputs": [
+                    {
+                        "worker": self.name,
+                        "language": ai_coding_output["language"],
+                        "script_preview": "",
+                        "degraded": True,
+                        "retry_attempts": coding_retry.attempts,
+                        "requires_human_approval": True,
+                    }
+                ],
+                "degraded": True,
+                "retry_attempts": coding_retry.attempts,
+                "degradation_events": coding_retry.degradation_events,
+                "requires_human_approval": True,
+                "approval_reason": "ai_coding 连续失败，需要人工确认",
+                "warnings": state.get("warnings", [])
+                + ["ai_coding 连续失败，未进入 sandbox 执行。"],
+            }
+
         script = ai_coding_data.get("script", "")
         language = ai_coding_data.get("language", language)
 
-        # 3. Execute in sandbox
-        sandbox_result = services.sandbox_executor.execute(script, language)
-        sandbox_dict = sandbox_result.model_dump(mode="json")
+        # 3. Execute in sandbox with bounded retry.
+        sandbox_retry = await execute_sandbox_with_retry(
+            services.sandbox_executor,
+            script,
+            language,
+        )
+        sandbox_dict = (
+            sandbox_retry.result.data
+            if sandbox_retry.result is not None and isinstance(sandbox_retry.result.data, dict)
+            else {}
+        )
+        sandbox_allowed = bool(
+            sandbox_dict.get("allowed") and sandbox_dict.get("return_code") == 0
+        )
+        if sandbox_retry.degraded or not sandbox_allowed:
+            script_for_response = ""
+        else:
+            script_for_response = script
 
         ai_coding_output = {
             "language": language,
-            "script": script,
+            "script": script_for_response,
             "explanation": ai_coding_data.get("explanation", ""),
             "warnings": ai_coding_data.get("warnings", []),
             "sandbox_result": sandbox_dict,
+            "degraded": sandbox_retry.degraded,
         }
 
-        tool_calls = [
-            {
-                "tool_name": "ai_coding",
-                "input": {"task": question, "language": language},
-                "output": ai_coding_data,
-                "status": "success" if coding_result.success else "failed",
-                "duration_ms": coding_result.metadata.get("duration_ms"),
-            },
-            {
-                "tool_name": "sandbox_execute",
-                "input": {"language": language, "script_preview": script[:120]},
-                "output": sandbox_dict,
-                "status": "success" if sandbox_result.allowed and sandbox_result.return_code == 0 else "failed",
-                "duration_ms": sandbox_result.duration_ms,
-            },
-        ]
+        tool_calls = coding_retry.tool_calls + sandbox_retry.tool_calls
+        degradation_events = (
+            coding_retry.degradation_events + sandbox_retry.degradation_events
+        )
 
         return {
             "ai_coding": ai_coding_output,
@@ -83,10 +130,27 @@ class AICodingWorker(BaseWorker):
                     "worker": self.name,
                     "language": language,
                     "script_preview": script[:200],
-                    "sandbox_allowed": sandbox_result.allowed,
-                    "sandbox_return_code": sandbox_result.return_code,
+                    "sandbox_allowed": sandbox_dict.get("allowed"),
+                    "sandbox_return_code": sandbox_dict.get("return_code"),
+                    "degraded": sandbox_retry.degraded,
+                    "retry_attempts": max(coding_retry.attempts, sandbox_retry.attempts),
                 }
             ],
+            "degraded": sandbox_retry.degraded,
+            "retry_attempts": max(coding_retry.attempts, sandbox_retry.attempts),
+            "degradation_events": degradation_events,
+            "requires_human_approval": sandbox_retry.degraded,
+            "approval_reason": (
+                "sandbox execution failed after retries"
+                if sandbox_retry.degraded
+                else state.get("approval_reason")
+            ),
+            "warnings": state.get("warnings", [])
+            + (
+                ["sandbox execution failed after 5 retries"]
+                if sandbox_retry.degraded
+                else []
+            ),
         }
 
     def _infer_language(

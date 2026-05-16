@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,6 +40,20 @@ class Settings(BaseSettings):
     memory_max_window: int = 20
     memory_summary_trigger: int = 15
     streaming_enabled: bool = True
+
+    # ------------------------------------------------------------------
+    # Bounded Agent Loop
+    # ------------------------------------------------------------------
+    agent_loop_enabled: bool = True
+    agent_loop_max_steps: int = 8
+    agent_loop_max_tool_retries: int = 5
+    agent_loop_max_retrieval_retries: int = 2
+    agent_loop_max_answer_regenerations: int = 2
+    agent_loop_confidence_threshold: float = 0.7
+    agent_loop_retry_backoff_ms: list[int] = Field(
+        default_factory=lambda: [0, 100, 200, 400, 800]
+    )
+    agent_loop_high_risk_requires_approval: bool = True
 
     # ------------------------------------------------------------------
     # Reranker (SiliconFlow)

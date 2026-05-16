@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.agent_loop.retry import execute_tool_with_retry
 from app.services.skills_loader import SkillsLoader
 from app.services.workers.base import BaseWorker
 
@@ -24,10 +25,17 @@ class SOPGuidanceWorker(BaseWorker):
     ) -> dict[str, Any]:
         question = state.get("question", "")
         evidence = state.get("evidence", [])
+        tool_calls: list[dict[str, Any]] = []
+        degraded = False
+        retry_attempts = 0
+        degradation_events: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        risk_level = "low"
 
         # If no evidence in state, retrieve it
         if not evidence:
-            result = await services.tool_registry.execute(
+            retry_result = await execute_tool_with_retry(
+                services.tool_registry,
                 "manual_lookup",
                 {
                     "question": question,
@@ -35,13 +43,25 @@ class SOPGuidanceWorker(BaseWorker):
                     "device_model": state.get("device_model"),
                 },
             )
-            if result.success and isinstance(result.data, list):
+            result = retry_result.result
+            tool_calls = retry_result.tool_calls
+            degraded = retry_result.degraded
+            retry_attempts = retry_result.attempts
+            degradation_events = retry_result.degradation_events
+            if result is not None and result.success and isinstance(result.data, list):
                 evidence = [item for item in result.data if isinstance(item, dict)]
+            if degraded:
+                risk_level = "medium"
+                warnings.append("manual_lookup 连续失败 5 次，仅提供通用安全流程")
 
         sop_steps = self._build_sop_steps(question, evidence)
+        if degraded:
+            sop_steps.insert(0, "未检索到手册证据，仅提供通用安全流程；请人工复核后继续。")
         safety_prerequisites = self._build_safety_prerequisites()
 
         return {
+            "evidence": evidence if isinstance(evidence, list) else [],
+            "tool_calls": tool_calls,
             "worker_outputs": [
                 {
                     "worker": self.name,
@@ -52,9 +72,16 @@ class SOPGuidanceWorker(BaseWorker):
                         "测量值超出标准范围时停止并记录",
                     ],
                     "evidence_count": len(evidence),
+                    "degraded": degraded,
+                    "retry_attempts": retry_attempts,
+                    "risk_level": risk_level,
                 }
             ],
             "sop": sop_steps,
+            "degraded": degraded,
+            "retry_attempts": retry_attempts,
+            "degradation_events": degradation_events,
+            "warnings": state.get("warnings", []) + warnings,
         }
 
     def _build_sop_steps(

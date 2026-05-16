@@ -31,3 +31,14 @@ class HarnessState(TypedDict, total=False):
     iteration_count: int
     output_guardrail_issues: list[str]
     stream_events: list[dict[str, Any]]
+    # -- Bounded Agent Loop fields --
+    loop_step: int
+    loop_history: list[dict[str, Any]]
+    tool_retry_counts: dict[str, int]
+    retrieval_retry_count: int
+    answer_regeneration_count: int
+    degradation_events: list[dict[str, Any]]
+    requires_human_approval: bool
+    approval_reason: str | None
+    clarification_question: str | None
+    fail_safe_reason: str | None

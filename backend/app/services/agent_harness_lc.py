@@ -56,6 +56,16 @@ class AgentHarness:
             "response": None,
             "errors": [],
             "warnings": [],
+            "loop_step": 0,
+            "loop_history": [],
+            "tool_retry_counts": {},
+            "retrieval_retry_count": 0,
+            "answer_regeneration_count": 0,
+            "degradation_events": [],
+            "requires_human_approval": False,
+            "approval_reason": None,
+            "clarification_question": None,
+            "fail_safe_reason": None,
         }
         final_state = await self._invoke_graph(initial_state, session_id)
         response = final_state.get("response")
@@ -127,6 +137,16 @@ class AgentHarness:
             "warnings": [],
             "guardrail_passed": True,
             "iteration_count": 0,
+            "loop_step": 0,
+            "loop_history": [],
+            "tool_retry_counts": {},
+            "retrieval_retry_count": 0,
+            "answer_regeneration_count": 0,
+            "degradation_events": [],
+            "requires_human_approval": False,
+            "approval_reason": None,
+            "clarification_question": None,
+            "fail_safe_reason": None,
         }
 
         # Try LangGraph streaming, fall back to sequential execution with manual yields

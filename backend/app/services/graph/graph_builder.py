@@ -8,6 +8,14 @@ from typing import Any
 
 from app.core.config import settings
 from app.schemas.query import QueryResponse
+from app.services.agent_loop.actions import AgentLoopAction
+from app.services.agent_loop.controller import (
+    AgentLoopController,
+    has_effective_evidence,
+    placeholder_used_in_state,
+)
+from app.services.agent_loop.policy import AgentLoopPolicy
+from app.services.agent_loop.retry import execute_sandbox_with_retry, execute_tool_with_retry
 from app.services.graph.state import HarnessState
 
 logger = logging.getLogger(__name__)
@@ -107,13 +115,22 @@ def _build_new_graph(services, StateGraph, END, checkpointer) -> Any:
     graph.add_node("memory_load_node", nodes["memory_load_node"])
     graph.add_node("orchestrator_node", nodes["orchestrator_node"])
     graph.add_node("worker_executor_node", nodes["worker_executor_node"])
+    graph.add_node("loop_decision_node", nodes["loop_decision_node"])
+    graph.add_node("retrieval_retry_node", nodes["retrieval_retry_node"])
+    graph.add_node("approval_node", nodes["approval_node"])
+    graph.add_node("clarification_node", nodes["clarification_node"])
+    graph.add_node("fail_safe_node", nodes["fail_safe_node"])
 
     if use_eo:
         graph.add_node("evaluator_optimizer_node", nodes["evaluator_optimizer_node"])
+        graph.add_node("post_eval_loop_decision_node", nodes["post_eval_loop_decision_node"])
+        graph.add_node("answer_regeneration_node", nodes["answer_regeneration_node"])
     else:
         graph.add_node("draft_answer_node", nodes["draft_answer_node"])
         graph.add_node("compliance_node", nodes["compliance_node"])
         graph.add_node("evaluator_node", nodes["evaluator_node"])
+        graph.add_node("post_eval_loop_decision_node", nodes["post_eval_loop_decision_node"])
+        graph.add_node("answer_regeneration_node", nodes["answer_regeneration_node"])
 
     if use_og:
         graph.add_node("output_guardrail_node", nodes["output_guardrail_node"])
@@ -137,23 +154,94 @@ def _build_new_graph(services, StateGraph, END, checkpointer) -> Any:
 
     graph.add_edge("memory_load_node", "orchestrator_node")
     graph.add_edge("orchestrator_node", "worker_executor_node")
+    graph.add_edge("worker_executor_node", "loop_decision_node")
 
     if use_eo:
-        graph.add_edge("worker_executor_node", "evaluator_optimizer_node")
+        graph.add_conditional_edges(
+            "loop_decision_node",
+            nodes["route_loop_decision"],
+            {
+                "retry_retrieval": "retrieval_retry_node",
+                "approval": "approval_node",
+                "clarification": "clarification_node",
+                "fail_safe": "fail_safe_node",
+                "evaluate": "evaluator_optimizer_node",
+            },
+        )
+        graph.add_conditional_edges(
+            "retrieval_retry_node",
+            nodes["route_after_retrieval_retry"],
+            {
+                "evaluate": "evaluator_optimizer_node",
+                "decide": "loop_decision_node",
+            },
+        )
+        graph.add_edge("evaluator_optimizer_node", "post_eval_loop_decision_node")
+        graph.add_conditional_edges(
+            "post_eval_loop_decision_node",
+            nodes["route_post_eval_loop_decision"],
+            {
+                "regenerate": "answer_regeneration_node",
+                "approval": "approval_node",
+                "clarification": "clarification_node",
+                "fail_safe": "fail_safe_node",
+                "output": "output_guardrail_node" if use_og else "trace_node",
+            },
+        )
+        graph.add_edge("answer_regeneration_node", "evaluator_optimizer_node")
         if use_og:
-            graph.add_edge("evaluator_optimizer_node", "output_guardrail_node")
+            graph.add_edge("approval_node", "output_guardrail_node")
+            graph.add_edge("clarification_node", "output_guardrail_node")
+            graph.add_edge("fail_safe_node", "output_guardrail_node")
             graph.add_edge("output_guardrail_node", "trace_node")
         else:
-            graph.add_edge("evaluator_optimizer_node", "trace_node")
+            graph.add_edge("approval_node", "trace_node")
+            graph.add_edge("clarification_node", "trace_node")
+            graph.add_edge("fail_safe_node", "trace_node")
     else:
-        graph.add_edge("worker_executor_node", "draft_answer_node")
+        graph.add_conditional_edges(
+            "loop_decision_node",
+            nodes["route_loop_decision"],
+            {
+                "retry_retrieval": "retrieval_retry_node",
+                "approval": "approval_node",
+                "clarification": "clarification_node",
+                "fail_safe": "fail_safe_node",
+                "evaluate": "draft_answer_node",
+            },
+        )
+        graph.add_conditional_edges(
+            "retrieval_retry_node",
+            nodes["route_after_retrieval_retry"],
+            {
+                "evaluate": "draft_answer_node",
+                "decide": "loop_decision_node",
+            },
+        )
         graph.add_edge("draft_answer_node", "compliance_node")
         graph.add_edge("compliance_node", "evaluator_node")
+        graph.add_edge("evaluator_node", "post_eval_loop_decision_node")
+        graph.add_conditional_edges(
+            "post_eval_loop_decision_node",
+            nodes["route_post_eval_loop_decision"],
+            {
+                "regenerate": "answer_regeneration_node",
+                "approval": "approval_node",
+                "clarification": "clarification_node",
+                "fail_safe": "fail_safe_node",
+                "output": "output_guardrail_node" if use_og else "trace_node",
+            },
+        )
+        graph.add_edge("answer_regeneration_node", "draft_answer_node")
         if use_og:
-            graph.add_edge("evaluator_node", "output_guardrail_node")
+            graph.add_edge("approval_node", "output_guardrail_node")
+            graph.add_edge("clarification_node", "output_guardrail_node")
+            graph.add_edge("fail_safe_node", "output_guardrail_node")
             graph.add_edge("output_guardrail_node", "trace_node")
         else:
-            graph.add_edge("evaluator_node", "trace_node")
+            graph.add_edge("approval_node", "trace_node")
+            graph.add_edge("clarification_node", "trace_node")
+            graph.add_edge("fail_safe_node", "trace_node")
 
     graph.add_edge("trace_node", "memory_save_node")
     graph.add_edge("memory_save_node", "finalize_node")
@@ -188,6 +276,16 @@ def _build_nodes(services) -> dict[str, Any]:
             "ai_coding": None,
             "sandbox_result": None,
             "evaluation": None,
+            "loop_step": 0,
+            "loop_history": [],
+            "tool_retry_counts": {},
+            "retrieval_retry_count": 0,
+            "answer_regeneration_count": 0,
+            "degradation_events": [],
+            "requires_human_approval": False,
+            "approval_reason": None,
+            "clarification_question": None,
+            "fail_safe_reason": None,
         }
 
     async def memory_load_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -232,7 +330,8 @@ def _build_nodes(services) -> dict[str, Any]:
         }
 
     async def ai_coding_node(state: dict[str, Any]) -> dict[str, Any]:
-        result = await services.tool_registry.execute(
+        retry_result = await execute_tool_with_retry(
+            services.tool_registry,
             "ai_coding",
             {
                 "question": state["question"],
@@ -240,71 +339,102 @@ def _build_nodes(services) -> dict[str, Any]:
                 "language": "sql" if "sql" in state["question"].lower() else "python",
             },
         )
-        data = result.data if isinstance(result.data, dict) else {}
+        result = retry_result.result
+        data = result.data if result is not None and isinstance(result.data, dict) else {}
         ai_coding = {
             "language": data.get("language", "python"),
-            "script": data.get("script", ""),
+            "script": "" if retry_result.degraded else data.get("script", ""),
             "explanation": data.get("explanation", ""),
             "warnings": data.get("warnings", []),
+            "degraded": retry_result.degraded,
+            "requires_human_approval": data.get("requires_human_approval", False),
         }
-        tool_calls = state.get("tool_calls", []) + [
-            {
-                "tool_name": result.tool_name,
-                "input": {"question": state["question"]},
-                "output": data if result.success else {"error": result.error},
-                "status": "success" if result.success else "failed",
-                "duration_ms": result.metadata.get("duration_ms"),
-            }
-        ]
+        tool_calls = state.get("tool_calls", []) + retry_result.tool_calls
         return {
             "ai_coding": ai_coding,
             "tool_calls": tool_calls,
+            "degradation_events": state.get("degradation_events", [])
+            + retry_result.degradation_events,
+            "requires_human_approval": retry_result.degraded,
+            "approval_reason": (
+                "ai_coding 连续失败，需要人工确认"
+                if retry_result.degraded
+                else state.get("approval_reason")
+            ),
         }
 
     async def sandbox_node(state: dict[str, Any]) -> dict[str, Any]:
         ai_coding = state.get("ai_coding") or {}
         script = str(ai_coding.get("script", ""))
         language = str(ai_coding.get("language", "python"))
-        result = services.sandbox_executor.execute(script, language)
-        preview = script[:120]
-        script_hash = _script_hash(script)
-        tool_call = {
-            "tool_name": "sandbox_execute",
-            "input": {
+        if ai_coding.get("degraded") or ai_coding.get("requires_human_approval"):
+            sandbox_result = {
                 "language": language,
-                "script_hash": script_hash,
-                "script_preview": preview,
-            },
-            "output": result.model_dump(mode="json"),
-            "status": "success" if result.allowed and result.return_code == 0 else "failed",
-            "duration_ms": result.duration_ms,
-        }
-        sandbox_result = result.model_dump(mode="json")
+                "allowed": False,
+                "return_code": None,
+                "stdout": "",
+                "stderr": "",
+                "error": "ai_coding degraded; sandbox execution skipped",
+                "duration_ms": None,
+            }
+            return {
+                "ai_coding": {**ai_coding, "script": "", "sandbox_result": sandbox_result},
+                "sandbox_result": sandbox_result,
+                "tool_calls": state.get("tool_calls", []),
+                "requires_human_approval": True,
+                "approval_reason": state.get("approval_reason")
+                or "ai_coding degraded; sandbox execution skipped",
+                "warnings": _dedupe_strings(
+                    state.get("warnings", [])
+                    + ["ai_coding degraded; sandbox execution skipped"]
+                ),
+            }
+        retry_result = await execute_sandbox_with_retry(
+            services.sandbox_executor,
+            script,
+            language,
+        )
+        result = retry_result.result
+        sandbox_result = (
+            result.data
+            if result is not None and isinstance(result.data, dict)
+            else {
+                "language": language,
+                "allowed": False,
+                "return_code": None,
+                "error": "sandbox execution unavailable",
+            }
+        )
         ai_coding = {**ai_coding, "sandbox_result": sandbox_result}
+        if retry_result.degraded:
+            ai_coding["script"] = ""
         return {
             "ai_coding": ai_coding,
             "sandbox_result": sandbox_result,
-            "tool_calls": state.get("tool_calls", []) + [tool_call],
+            "tool_calls": state.get("tool_calls", []) + retry_result.tool_calls,
+            "degradation_events": state.get("degradation_events", [])
+            + retry_result.degradation_events,
+            "requires_human_approval": retry_result.degraded,
+            "approval_reason": (
+                "sandbox execution failed after retries"
+                if retry_result.degraded
+                else state.get("approval_reason")
+            ),
         }
 
     async def draft_answer_node(state: dict[str, Any]) -> dict[str, Any]:
         return await _draft_answer_with_llm(services, state)
 
     async def compliance_node(state: dict[str, Any]) -> dict[str, Any]:
-        result = await services.tool_registry.execute(
-            "compliance_check", {"answer": state.get("answer", "")}
+        retry_result = await execute_tool_with_retry(
+            services.tool_registry,
+            "compliance_check",
+            {"answer": state.get("answer", "")},
         )
         return {
-            "tool_calls": state.get("tool_calls", [])
-            + [
-                {
-                    "tool_name": result.tool_name,
-                    "input": {"answer": state.get("answer", "")},
-                    "output": result.data if result.success else {"error": result.error},
-                    "status": "success" if result.success else "failed",
-                    "duration_ms": result.metadata.get("duration_ms"),
-                }
-            ]
+            "tool_calls": state.get("tool_calls", []) + retry_result.tool_calls,
+            "degradation_events": state.get("degradation_events", [])
+            + retry_result.degradation_events,
         }
 
     async def evaluator_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -463,6 +593,11 @@ def _ensure_new_services(services) -> None:
         llm_client = getattr(services, "llm_client", None)
         services.output_guardrail = OutputGuardrail(llm_client=llm_client)
 
+    if not hasattr(services, "agent_loop_controller") or services.agent_loop_controller is None:
+        services.agent_loop_controller = AgentLoopController()
+    if not hasattr(services, "agent_loop_policy") or services.agent_loop_policy is None:
+        services.agent_loop_policy = AgentLoopPolicy.from_settings()
+
 
 def _build_new_nodes(services) -> dict[str, Any]:
     """Build node implementations for the Orchestrator-Workers graph.
@@ -522,8 +657,15 @@ def _build_new_nodes(services) -> dict[str, Any]:
         merged_tool_calls: list[dict[str, Any]] = _dedupe_tool_calls(state.get("tool_calls", []))
         merged_sop: list[str] = _dedupe_strings(state.get("sop", []))
         merged_warnings: list[str] = _dedupe_strings(state.get("warnings", []))
+        merged_degradation_events: list[dict[str, Any]] = list(
+            state.get("degradation_events", [])
+            if isinstance(state.get("degradation_events"), list)
+            else []
+        )
         merged_ai_coding: dict[str, Any] | None = state.get("ai_coding")
         merged_sandbox: dict[str, Any] | None = state.get("sandbox_result")
+        requires_human_approval = bool(state.get("requires_human_approval", False))
+        approval_reason = state.get("approval_reason")
         worker_evidence: list[dict[str, Any]] = []
 
         for result in worker_results:
@@ -561,11 +703,23 @@ def _build_new_nodes(services) -> dict[str, Any]:
             if isinstance(w_warnings, list):
                 merged_warnings = _dedupe_strings(merged_warnings + w_warnings)
 
+            w_events = result.get("degradation_events", [])
+            if isinstance(w_events, list):
+                merged_degradation_events.extend(
+                    event for event in w_events if isinstance(event, dict)
+                )
+            if result.get("requires_human_approval"):
+                requires_human_approval = True
+                approval_reason = result.get("approval_reason") or approval_reason
+
         update: dict[str, Any] = {
             "worker_outputs": worker_outputs,
             "evidence": merged_evidence,
             "tool_calls": merged_tool_calls,
             "warnings": merged_warnings,
+            "degradation_events": merged_degradation_events,
+            "requires_human_approval": requires_human_approval,
+            "approval_reason": approval_reason,
         }
 
         if not merged_evidence and not worker_evidence and _decision_needs_evidence(decision):
@@ -608,21 +762,171 @@ def _build_new_nodes(services) -> dict[str, Any]:
             "answer": modified if modified != answer else answer,
         }
 
+    async def loop_decision_node(state: dict[str, Any]) -> dict[str, Any]:
+        return _loop_decision_update(state, services)
+
+    async def post_eval_loop_decision_node(state: dict[str, Any]) -> dict[str, Any]:
+        return _loop_decision_update(state, services)
+
+    async def retrieval_retry_node(state: dict[str, Any]) -> dict[str, Any]:
+        retry_count = int(state.get("retrieval_retry_count", 0) or 0) + 1
+        retry_question = _build_retry_query(state)
+        retry_result = await execute_tool_with_retry(
+            services.tool_registry,
+            "manual_lookup",
+            {
+                "question": retry_question,
+                "device_name": state.get("device_name"),
+                "device_model": state.get("device_model"),
+            },
+            max_retries=services.agent_loop_policy.max_tool_retries,
+            backoff_ms=services.agent_loop_policy.retry_backoff_ms,
+        )
+        evidence: list[dict[str, Any]] = []
+        if (
+            retry_result.result is not None
+            and retry_result.result.success
+            and isinstance(retry_result.result.data, list)
+        ):
+            evidence = [item for item in retry_result.result.data if isinstance(item, dict)]
+
+        merged_evidence = _dedupe_evidence(state.get("evidence", []) + evidence)
+        merged_tool_calls = _dedupe_tool_calls(
+            state.get("tool_calls", []) + retry_result.tool_calls
+        )
+        degradation_events = list(state.get("degradation_events", []))
+        degradation_events.extend(retry_result.degradation_events)
+        warnings = _dedupe_strings(state.get("warnings", []))
+        if not any(has_effective_evidence({"evidence": [item]}) for item in evidence):
+            warnings = _dedupe_strings(
+                warnings + ["检索重试后仍未获得有效手册证据"]
+            )
+            degradation_events.append(
+                {
+                    "type": "retrieval_degraded",
+                    "tool_name": "manual_lookup",
+                    "attempts": retry_result.attempts,
+                    "reason": "retrieval retry returned no effective evidence",
+                    "fallback": "clarification or fail-safe",
+                }
+            )
+
+        return {
+            "question": state.get("question", ""),
+            "retrieval_retry_count": retry_count,
+            "evidence": merged_evidence,
+            "tool_calls": merged_tool_calls,
+            "warnings": warnings,
+            "degradation_events": degradation_events,
+        }
+
+    async def answer_regeneration_node(state: dict[str, Any]) -> dict[str, Any]:
+        count = int(state.get("answer_regeneration_count", 0) or 0) + 1
+        history = _append_loop_history(
+            state,
+            {
+                "action": AgentLoopAction.REGENERATE_ANSWER.value,
+                "reason": "Regenerating answer after low confidence evaluation",
+                "count": count,
+            },
+        )
+        return {
+            "answer": "",
+            "answer_regeneration_count": count,
+            "loop_history": history,
+            "warnings": _dedupe_strings(
+                state.get("warnings", []) + ["低置信度答案触发有限再生成"]
+            ),
+        }
+
+    async def approval_node(state: dict[str, Any]) -> dict[str, Any]:
+        reason = state.get("approval_reason") or _loop_reason(state)
+        answer = (
+            "该请求涉及高风险操作或当前手册证据不足，建议人工确认后继续。"
+            "在人工复核前，我不能提供具体拆卸、刷写、带电操作或直接更换步骤。"
+        )
+        return {
+            "answer": answer,
+            "requires_human_approval": True,
+            "approval_reason": reason,
+            "warnings": _dedupe_strings(state.get("warnings", []) + [str(reason)]),
+        }
+
+    async def clarification_node(state: dict[str, Any]) -> dict[str, Any]:
+        question = (
+            "目前证据不足，无法给出确定结论。请补充：设备型号、故障发生时机、"
+            "冷车/热车状态、是否有异响、是否已有测量值。"
+        )
+        return {
+            "answer": question,
+            "clarification_question": question,
+            "warnings": _dedupe_strings(
+                state.get("warnings", []) + ["证据不足，已请求补充信息"]
+            ),
+        }
+
+    async def fail_safe_node(state: dict[str, Any]) -> dict[str, Any]:
+        reason = _loop_reason(state) or "Agent Loop 无法可靠完成诊断"
+        answer = (
+            "系统无法可靠完成本次诊断，不能编造参数或维修结论。"
+            "请补充手册证据、设备型号和故障现象，或交由具备资质的维修人员人工检修。"
+        )
+        return {
+            "answer": answer,
+            "fail_safe_reason": reason,
+            "evaluation": {
+                "is_safe": False,
+                "is_compliant": False,
+                "confidence": 0.0,
+                "issues": [str(reason)],
+                "feedback": "fail-safe",
+            },
+            "warnings": _dedupe_strings(state.get("warnings", []) + [str(reason)]),
+        }
+
+    def route_loop_decision(state: dict[str, Any]) -> str:
+        return _route_loop_decision_value(state)
+
+    def route_post_eval_loop_decision(state: dict[str, Any]) -> str:
+        decision = _decision_action(state)
+        if decision == AgentLoopAction.REGENERATE_ANSWER.value:
+            return "regenerate"
+        if decision == AgentLoopAction.REQUIRE_APPROVAL.value:
+            return "approval"
+        if decision == AgentLoopAction.ASK_CLARIFICATION.value:
+            return "clarification"
+        if decision == AgentLoopAction.FAIL_SAFE.value:
+            return "fail_safe"
+        return "output"
+
+    def route_after_retrieval_retry(state: dict[str, Any]) -> str:
+        return "evaluate" if has_effective_evidence(state) else "decide"
+
     return {
         "intake_node": legacy_nodes["intake_node"],
         "input_guardrail_node": input_guardrail_node,
         "memory_load_node": legacy_nodes["memory_load_node"],
         "orchestrator_node": orchestrator_node,
         "worker_executor_node": worker_executor_node,
+        "loop_decision_node": loop_decision_node,
+        "retrieval_retry_node": retrieval_retry_node,
         "draft_answer_node": legacy_nodes["draft_answer_node"],
         "compliance_node": legacy_nodes["compliance_node"],
         "evaluator_node": legacy_nodes["evaluator_node"],
         "evaluator_optimizer_node": evaluator_optimizer_node,
+        "post_eval_loop_decision_node": post_eval_loop_decision_node,
+        "answer_regeneration_node": answer_regeneration_node,
+        "approval_node": approval_node,
+        "clarification_node": clarification_node,
+        "fail_safe_node": fail_safe_node,
         "output_guardrail_node": output_guardrail_node,
         "trace_node": legacy_nodes["trace_node"],
         "memory_save_node": legacy_nodes["memory_save_node"],
         "finalize_node": legacy_nodes["finalize_node"],
         "route_after_guardrail": route_after_guardrail,
+        "route_loop_decision": route_loop_decision,
+        "route_after_retrieval_retry": route_after_retrieval_retry,
+        "route_post_eval_loop_decision": route_post_eval_loop_decision,
     }
 
 
@@ -776,6 +1080,86 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if item is not None]
+
+
+def _loop_decision_update(state: dict[str, Any], services) -> dict[str, Any]:
+    loop_step = int(state.get("loop_step", 0) or 0) + 1
+    policy = getattr(services, "agent_loop_policy", AgentLoopPolicy.from_settings())
+    controller = getattr(services, "agent_loop_controller", AgentLoopController())
+    decision = controller.decide({**state, "loop_step": loop_step}, policy)
+    decision_data = decision.model_dump(mode="json")
+    history = _append_loop_history(
+        state,
+        {
+            "step": loop_step,
+            "action": decision.action.value,
+            "reason": decision.reason,
+            "target": decision.target,
+            "confidence": decision.confidence,
+        },
+    )
+    return {
+        "loop_step": loop_step,
+        "loop_history": history,
+        "_agent_loop_decision": decision_data,
+        "requires_human_approval": (
+            True
+            if decision.requires_approval
+            else bool(state.get("requires_human_approval", False))
+        ),
+        "approval_reason": (
+            decision.reason
+            if decision.requires_approval
+            else state.get("approval_reason")
+        ),
+    }
+
+
+def _append_loop_history(
+    state: dict[str, Any],
+    item: dict[str, Any],
+) -> list[dict[str, Any]]:
+    history = state.get("loop_history", [])
+    if not isinstance(history, list):
+        history = []
+    return [entry for entry in history if isinstance(entry, dict)] + [item]
+
+
+def _decision_action(state: dict[str, Any]) -> str:
+    decision = state.get("_agent_loop_decision")
+    if isinstance(decision, dict):
+        return str(decision.get("action") or AgentLoopAction.FINALIZE.value)
+    return AgentLoopAction.FINALIZE.value
+
+
+def _loop_reason(state: dict[str, Any]) -> str:
+    decision = state.get("_agent_loop_decision")
+    if isinstance(decision, dict):
+        return str(decision.get("reason") or "")
+    return ""
+
+
+def _route_loop_decision_value(state: dict[str, Any]) -> str:
+    action = _decision_action(state)
+    if action == AgentLoopAction.RETRY_RETRIEVAL.value:
+        return "retry_retrieval"
+    if action == AgentLoopAction.REQUIRE_APPROVAL.value:
+        return "approval"
+    if action == AgentLoopAction.ASK_CLARIFICATION.value:
+        return "clarification"
+    if action == AgentLoopAction.FAIL_SAFE.value:
+        return "fail_safe"
+    return "evaluate"
+
+
+def _build_retry_query(state: dict[str, Any]) -> str:
+    parts = [
+        str(state.get("question") or ""),
+        str(state.get("device_name") or ""),
+        str(state.get("device_model") or ""),
+        "维修手册 检查 参数 故障",
+    ]
+    return "\n".join(part for part in parts if part.strip())
 
 
 def _dedupe_evidence(items: Any) -> list[dict[str, Any]]:
