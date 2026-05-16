@@ -13,6 +13,12 @@ class SpanKind(str, Enum):
     TOOL = "tool"
     LLM = "llm"
     GUARDRAIL = "guardrail"
+    NODE = "node"
+    RETRIEVER = "retriever"
+    RERANKER = "reranker"
+    EVALUATOR = "evaluator"
+    SANDBOX = "sandbox"
+    MEMORY = "memory"
 
 
 class SpanStatus(str, Enum):

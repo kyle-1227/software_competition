@@ -6,6 +6,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.schemas.query import QueryResponse
+from app.schemas.trace import SpanKind
 from app.services.agent_loop.actions import AgentLoopAction
 from app.services.agent_loop.controller import (
     AgentLoopController,
@@ -15,6 +16,7 @@ from app.services.agent_loop.controller import (
 from app.services.agent_loop.policy import AgentLoopPolicy
 from app.services.agent_loop.retry import execute_tool_with_retry
 from app.services.graph.state import HarnessState
+from app.services.tracing.context import trace_span
 
 logger = logging.getLogger(__name__)
 
@@ -252,11 +254,43 @@ def _build_shared_nodes(services) -> dict[str, Any]:
             ]
         return {"response": response, **response}
 
+    finalize_node_impl = finalize_node
+
+    async def finalize_node(state: dict[str, Any]) -> dict[str, Any]:
+        trace_id = state.get("trace_id")
+        try:
+            async with trace_span(
+                getattr(services, "trace_store", None),
+                trace_id,
+                "node.finalize",
+                SpanKind.NODE,
+                inputs=_node_span_metadata(state, "finalize"),
+                metadata=_node_span_metadata(state, "finalize"),
+            ) as span:
+                update = await finalize_node_impl(state)
+                span.set_metadata(_node_span_metadata({**state, **update}, "finalize"))
+                span.set_outputs(update)
+                return update
+        finally:
+            close_trace = getattr(
+                getattr(services, "trace_store", None),
+                "close_trace",
+                None,
+            )
+            if trace_id and callable(close_trace):
+                close_trace(trace_id)
+
     return {
         "intake_node": intake_node,
-        "memory_load_node": memory_load_node,
-        "trace_node": trace_node,
-        "memory_save_node": memory_save_node,
+        "memory_load_node": _wrap_node_with_span(
+            services, "memory_load", SpanKind.MEMORY, memory_load_node
+        ),
+        "trace_node": _wrap_node_with_span(
+            services, "trace", SpanKind.NODE, trace_node
+        ),
+        "memory_save_node": _wrap_node_with_span(
+            services, "memory_save", SpanKind.MEMORY, memory_save_node
+        ),
         "finalize_node": finalize_node,
     }
 
@@ -308,6 +342,54 @@ def _ensure_new_services(services) -> None:
         services.agent_loop_controller = AgentLoopController()
     if not hasattr(services, "agent_loop_policy") or services.agent_loop_policy is None:
         services.agent_loop_policy = AgentLoopPolicy.from_settings()
+
+
+def _wrap_node_with_span(services, node_name: str, kind: SpanKind, node):
+    async def wrapped(state: dict[str, Any]) -> dict[str, Any]:
+        async with trace_span(
+            getattr(services, "trace_store", None),
+            state.get("trace_id"),
+            f"node.{node_name}",
+            kind,
+            inputs=_node_span_metadata(state, node_name),
+            metadata=_node_span_metadata(state, node_name),
+        ) as span:
+            update = await node(state)
+            merged_state = {**state, **(update or {})}
+            span.set_metadata(_node_span_metadata(merged_state, node_name))
+            span.set_outputs(update or {})
+            return update
+
+    return wrapped
+
+
+def _node_span_metadata(state: dict[str, Any], node_name: str) -> dict[str, Any]:
+    evaluation = state.get("evaluation")
+    confidence = evaluation.get("confidence") if isinstance(evaluation, dict) else None
+    return {
+        "node_name": node_name,
+        "evidence_count": len(state.get("evidence", []) or []),
+        "tool_call_count": len(state.get("tool_calls", []) or []),
+        "warning_count": len(state.get("warnings", []) or []),
+        "degradation_event_count": len(state.get("degradation_events", []) or []),
+        "loop_decision_count": state.get("loop_decision_count", 0),
+        "retrieval_retry_count": state.get("retrieval_retry_count", 0),
+        "answer_regeneration_count": state.get("answer_regeneration_count", 0),
+        "decision_action": _decision_action(state),
+        "confidence": confidence,
+        "requires_human_approval": bool(state.get("requires_human_approval", False)),
+    }
+
+
+def _retrieved_pages(evidence: list[dict[str, Any]]) -> list[Any]:
+    pages: list[Any] = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        page = item.get("page")
+        if page is not None and page not in pages:
+            pages.append(page)
+    return pages
 
 
 def _build_new_nodes(services) -> dict[str, Any]:
@@ -595,19 +677,49 @@ def _build_new_nodes(services) -> dict[str, Any]:
 
     return {
         "intake_node": shared_nodes["intake_node"],
-        "input_guardrail_node": input_guardrail_node,
+        "input_guardrail_node": _wrap_node_with_span(
+            services, "input_guardrail", SpanKind.GUARDRAIL, input_guardrail_node
+        ),
         "memory_load_node": shared_nodes["memory_load_node"],
-        "orchestrator_node": orchestrator_node,
-        "worker_executor_node": worker_executor_node,
-        "loop_decision_node": loop_decision_node,
-        "retrieval_retry_node": retrieval_retry_node,
-        "evaluator_optimizer_node": evaluator_optimizer_node,
-        "post_eval_loop_decision_node": post_eval_loop_decision_node,
-        "answer_regeneration_node": answer_regeneration_node,
-        "approval_node": approval_node,
-        "clarification_node": clarification_node,
-        "fail_safe_node": fail_safe_node,
-        "output_guardrail_node": output_guardrail_node,
+        "orchestrator_node": _wrap_node_with_span(
+            services, "orchestrator", SpanKind.NODE, orchestrator_node
+        ),
+        "worker_executor_node": _wrap_node_with_span(
+            services, "worker_executor", SpanKind.NODE, worker_executor_node
+        ),
+        "loop_decision_node": _wrap_node_with_span(
+            services, "loop_decision", SpanKind.NODE, loop_decision_node
+        ),
+        "retrieval_retry_node": _wrap_node_with_span(
+            services, "retrieval_retry", SpanKind.NODE, retrieval_retry_node
+        ),
+        "evaluator_optimizer_node": _wrap_node_with_span(
+            services,
+            "evaluator_optimizer",
+            SpanKind.EVALUATOR,
+            evaluator_optimizer_node,
+        ),
+        "post_eval_loop_decision_node": _wrap_node_with_span(
+            services,
+            "post_eval_loop_decision",
+            SpanKind.EVALUATOR,
+            post_eval_loop_decision_node,
+        ),
+        "answer_regeneration_node": _wrap_node_with_span(
+            services, "answer_regeneration", SpanKind.NODE, answer_regeneration_node
+        ),
+        "approval_node": _wrap_node_with_span(
+            services, "approval", SpanKind.NODE, approval_node
+        ),
+        "clarification_node": _wrap_node_with_span(
+            services, "clarification", SpanKind.NODE, clarification_node
+        ),
+        "fail_safe_node": _wrap_node_with_span(
+            services, "fail_safe", SpanKind.NODE, fail_safe_node
+        ),
+        "output_guardrail_node": _wrap_node_with_span(
+            services, "output_guardrail", SpanKind.GUARDRAIL, output_guardrail_node
+        ),
         "trace_node": shared_nodes["trace_node"],
         "memory_save_node": shared_nodes["memory_save_node"],
         "finalize_node": shared_nodes["finalize_node"],
@@ -625,49 +737,86 @@ async def _run_manual_lookup_with_retry(
 ) -> dict[str, Any]:
     policy = getattr(services, "agent_loop_policy", AgentLoopPolicy.from_settings())
     question = question_override or state.get("question", "")
-    retry_result = await execute_tool_with_retry(
-        services.tool_registry,
-        "manual_lookup",
-        {
+    payload = {
+        "question": question,
+        "device_name": state.get("device_name"),
+        "device_model": state.get("device_model"),
+    }
+    async with trace_span(
+        getattr(services, "trace_store", None),
+        state.get("trace_id"),
+        "tool.manual_lookup",
+        SpanKind.TOOL,
+        inputs=payload,
+        metadata={
+            "tool_name": "manual_lookup",
+            "max_retries": policy.max_tool_retries,
             "question": question,
             "device_name": state.get("device_name"),
             "device_model": state.get("device_model"),
         },
-        max_retries=policy.max_tool_retries,
-        backoff_ms=policy.retry_backoff_ms,
-    )
-    evidence: list[dict[str, Any]] = []
-    if (
-        retry_result.result is not None
-        and retry_result.result.success
-        and isinstance(retry_result.result.data, list)
-    ):
-        evidence = [item for item in retry_result.result.data if isinstance(item, dict)]
-
-    merged_evidence = _dedupe_evidence(state.get("evidence", []) + evidence)
-    merged_tool_calls = _dedupe_tool_calls(
-        state.get("tool_calls", []) + retry_result.tool_calls
-    )
-    warnings = _dedupe_strings(state.get("warnings", []))
-    if not has_effective_evidence({"evidence": evidence}):
-        warnings = _dedupe_strings(
-            warnings + ["manual_lookup returned no effective manual evidence"]
+    ) as span:
+        retry_result = await execute_tool_with_retry(
+            services.tool_registry,
+            "manual_lookup",
+            payload,
+            max_retries=policy.max_tool_retries,
+            backoff_ms=policy.retry_backoff_ms,
         )
+        evidence: list[dict[str, Any]] = []
+        if (
+            retry_result.result is not None
+            and retry_result.result.success
+            and isinstance(retry_result.result.data, list)
+        ):
+            evidence = [item for item in retry_result.result.data if isinstance(item, dict)]
 
-    degradation_events = list(
-        state.get("degradation_events", [])
-        if isinstance(state.get("degradation_events"), list)
-        else []
-    )
-    degradation_events.extend(retry_result.degradation_events)
+        merged_evidence = _dedupe_evidence(state.get("evidence", []) + evidence)
+        merged_tool_calls = _dedupe_tool_calls(
+            state.get("tool_calls", []) + retry_result.tool_calls
+        )
+        warnings = _dedupe_strings(state.get("warnings", []))
+        if not has_effective_evidence({"evidence": evidence}):
+            warnings = _dedupe_strings(
+                warnings + ["manual_lookup returned no effective manual evidence"]
+            )
 
-    return {
-        "evidence": merged_evidence,
-        "tool_calls": merged_tool_calls,
-        "warnings": warnings,
-        "degradation_events": degradation_events,
-        "_manual_lookup_attempts": retry_result.attempts,
-    }
+        degradation_events = list(
+            state.get("degradation_events", [])
+            if isinstance(state.get("degradation_events"), list)
+            else []
+        )
+        degradation_events.extend(retry_result.degradation_events)
+
+        result = {
+            "evidence": merged_evidence,
+            "tool_calls": merged_tool_calls,
+            "warnings": warnings,
+            "degradation_events": degradation_events,
+            "_manual_lookup_attempts": retry_result.attempts,
+        }
+        metadata = {
+            "tool_name": "manual_lookup",
+            "max_retries": policy.max_tool_retries,
+            "attempts": retry_result.attempts,
+            "degraded": retry_result.degraded,
+            "evidence_count": len(merged_evidence),
+            "placeholder_used": placeholder_used_in_state({"evidence": merged_evidence}),
+            "retrieved_pages": _retrieved_pages(merged_evidence),
+            "device_name": state.get("device_name"),
+            "device_model": state.get("device_model"),
+        }
+        span.set_metadata(metadata)
+        span.set_outputs(
+            {
+                "evidence_count": len(merged_evidence),
+                "tool_call_count": len(merged_tool_calls),
+                "degradation_event_count": len(degradation_events),
+                "placeholder_used": metadata["placeholder_used"],
+                "retrieved_pages": metadata["retrieved_pages"],
+            }
+        )
+        return result
 
 
 def _build_checkpointer():

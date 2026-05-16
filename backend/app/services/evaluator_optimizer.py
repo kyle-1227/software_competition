@@ -5,8 +5,10 @@ from typing import Any
 
 from app.core.config import settings
 from app.schemas.query import EvaluationResult
+from app.schemas.trace import SpanKind
 from app.services.agent_loop.retry import execute_tool_with_retry
 from app.services.answer_generation import draft_answer_with_llm
+from app.services.tracing.context import trace_span
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,66 @@ class EvaluatorOptimizer:
         self._evaluator = evaluator
 
     async def generate_and_evaluate(
+        self,
+        state: dict[str, Any],
+        services: Any,
+    ) -> dict[str, Any]:
+        trace_store = getattr(services, "trace_store", None)
+        trace_id = state.get("trace_id")
+        async with trace_span(
+            trace_store,
+            trace_id,
+            "evaluator.optimizer",
+            SpanKind.EVALUATOR,
+            inputs={
+                "evidence_count": len(state.get("evidence", []) or []),
+                "tool_call_count": len(state.get("tool_calls", []) or []),
+                "sop_count": len(state.get("sop", []) or []),
+                "has_existing_answer": bool(str(state.get("answer", "")).strip()),
+            },
+        ) as span:
+            result = await self._generate_and_evaluate_impl(state, services)
+            evaluation = result.get("evaluation", {})
+            issues = evaluation.get("issues", []) if isinstance(evaluation, dict) else []
+            confidence = (
+                evaluation.get("confidence", 0.0)
+                if isinstance(evaluation, dict)
+                else 0.0
+            )
+            tool_calls = result.get("tool_calls", [])
+            compliance_degraded = any(
+                isinstance(call, dict)
+                and call.get("tool_name") == "compliance_check"
+                and call.get("degraded")
+                for call in tool_calls
+            )
+            span.set_metadata(
+                {
+                    "max_iterations": getattr(settings, "evaluator_max_iterations", 3),
+                    "confidence_threshold": getattr(
+                        settings, "evaluator_confidence_threshold", 0.7
+                    ),
+                    "iteration_count": result.get("iteration_count", 0),
+                    "best_confidence": confidence,
+                    "final_confidence": confidence,
+                    "issues_count": len(issues),
+                    "compliance_degraded": compliance_degraded,
+                    "answer_regeneration_count": state.get(
+                        "answer_regeneration_count", 0
+                    ),
+                }
+            )
+            span.set_outputs(
+                {
+                    "answer_length": len(result.get("answer", "")),
+                    "confidence": confidence,
+                    "issues_count": len(issues),
+                    "iteration_count": result.get("iteration_count", 0),
+                }
+            )
+            return result
+
+    async def _generate_and_evaluate_impl(
         self,
         state: dict[str, Any],
         services: Any,

@@ -3,6 +3,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.schemas.trace import SpanKind
+from app.services.tracing.context import trace_span
+
 LOCAL_DIAGNOSTIC_MODEL = "local-diagnostic-template"
 DRAFT_ANSWER_PROMPT = (
     "你是设备检修智能辅助系统，请基于手册证据、工具调用记录和安全约束，"
@@ -23,57 +26,94 @@ PROVIDER_FALLBACK_MARKERS = (
 
 
 async def draft_answer_with_llm(services, state: dict[str, Any]) -> dict[str, Any]:
-    state_warnings = _string_list(state.get("warnings", []))
-    llm_response = None
-    llm_warnings: list[str] = []
-    fallback_reason: str | None = None
-
+    trace_store = getattr(services, "trace_store", None)
+    trace_id = state.get("trace_id")
     llm_client = getattr(services, "llm_client", None)
     generate_text = getattr(llm_client, "generate_text", None)
-    if generate_text is None:
-        fallback_reason = "LLM client unavailable, used local diagnostic template."
-    else:
-        try:
-            llm_response = await generate_text(
-                DRAFT_ANSWER_PROMPT,
-                _build_llm_context(state),
-            )
-            llm_warnings = _string_list(getattr(llm_response, "warnings", []))
-        except Exception as exc:
-            fallback_reason = f"LLM answer generation failed, used local diagnostic template: {exc}"
+    async with trace_span(
+        trace_store,
+        trace_id,
+        "llm.answer_generation",
+        SpanKind.LLM,
+        inputs={
+            "question": state.get("question"),
+            "evidence_count": len(state.get("evidence", []) or []),
+            "tool_call_count": len(state.get("tool_calls", []) or []),
+            "has_evaluation_feedback": bool(state.get("evaluation_feedback")),
+        },
+        metadata={"llm_available": generate_text is not None},
+    ) as span:
+        state_warnings = _string_list(state.get("warnings", []))
+        llm_response = None
+        llm_warnings: list[str] = []
+        fallback_reason: str | None = None
 
-    llm_usage = getattr(llm_response, "usage", None) if llm_response is not None else None
-    llm_text = _filter_reasoning_text(str(getattr(llm_response, "text", "") or "")).strip()
+        if generate_text is None:
+            fallback_reason = "LLM client unavailable, used local diagnostic template."
+        else:
+            try:
+                llm_response = await generate_text(
+                    DRAFT_ANSWER_PROMPT,
+                    _build_llm_context(state),
+                )
+                llm_warnings = _string_list(getattr(llm_response, "warnings", []))
+            except Exception as exc:
+                fallback_reason = f"LLM answer generation failed, used local diagnostic template: {exc}"
 
-    if llm_response is None:
-        use_local_fallback = True
-    elif not llm_text:
-        use_local_fallback = True
-        fallback_reason = "LLM returned empty answer, used local diagnostic template."
-    elif _has_provider_fallback_warning(llm_warnings):
-        use_local_fallback = True
-        fallback_reason = "LLM provider fallback detected, used local diagnostic template."
-    else:
-        use_local_fallback = False
+        llm_usage = getattr(llm_response, "usage", None) if llm_response is not None else None
+        llm_text = _filter_reasoning_text(str(getattr(llm_response, "text", "") or "")).strip()
+        provider_fallback_warning = _has_provider_fallback_warning(llm_warnings)
 
-    warnings = state_warnings + llm_warnings
-    if fallback_reason:
-        warnings.append(fallback_reason)
+        if llm_response is None:
+            use_local_fallback = True
+        elif not llm_text:
+            use_local_fallback = True
+            fallback_reason = "LLM returned empty answer, used local diagnostic template."
+        elif provider_fallback_warning:
+            use_local_fallback = True
+            fallback_reason = "LLM provider fallback detected, used local diagnostic template."
+        else:
+            use_local_fallback = False
 
-    if use_local_fallback:
-        return {
-            "answer": _build_diagnostic_answer(state),
-            "llm_model": LOCAL_DIAGNOSTIC_MODEL,
-            "llm_usage": llm_usage,
-            "warnings": warnings,
-        }
+        warnings = state_warnings + llm_warnings
+        if fallback_reason:
+            warnings.append(fallback_reason)
 
-    return {
-        "answer": llm_text,
-        "llm_model": getattr(llm_response, "model", None) or LOCAL_DIAGNOSTIC_MODEL,
-        "llm_usage": llm_usage,
-        "warnings": warnings,
-    }
+        if use_local_fallback:
+            result = {
+                "answer": _build_diagnostic_answer(state),
+                "llm_model": LOCAL_DIAGNOSTIC_MODEL,
+                "llm_usage": llm_usage,
+                "warnings": warnings,
+            }
+        else:
+            result = {
+                "answer": llm_text,
+                "llm_model": getattr(llm_response, "model", None) or LOCAL_DIAGNOSTIC_MODEL,
+                "llm_usage": llm_usage,
+                "warnings": warnings,
+            }
+
+        span.set_metadata(
+            {
+                "llm_available": generate_text is not None,
+                "llm_model": result.get("llm_model"),
+                "fallback_used": use_local_fallback,
+                "local_fallback": use_local_fallback,
+                "provider_fallback_warning": provider_fallback_warning,
+                "answer_length": len(result.get("answer", "")),
+                "warning_count": len(warnings),
+            }
+        )
+        span.set_outputs(
+            {
+                "answer_length": len(result.get("answer", "")),
+                "llm_model": result.get("llm_model"),
+                "warning_count": len(warnings),
+                "fallback_used": use_local_fallback,
+            }
+        )
+        return result
 
 
 def _build_llm_context(state: dict[str, Any]) -> dict[str, Any]:

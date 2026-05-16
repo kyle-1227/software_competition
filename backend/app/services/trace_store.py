@@ -16,20 +16,22 @@ logger = logging.getLogger(__name__)
 
 
 class TraceStore:
-    """Execution trace store with nested span model + flat legacy compat.
+    """Execution trace store with nested span model + flat trace compatibility.
 
     New code uses start_trace_session / add_span / close_trace with the
-    Trace/TraceSpan pydantic models. Legacy record_* methods are preserved
-    as wrappers that emit into the root span.
+    Trace/TraceSpan pydantic models. Flat record_* methods are preserved for
+    the current trace_node and flat trace readers; they can be cleaned up later
+    after span coverage is complete.
     """
 
     def __init__(self, storage_path: Path | None = None) -> None:
         self._traces: dict[str, dict[str, object]] = {}  # legacy flat dicts
         self._trace_sessions: dict[str, Trace] = {}       # new nested spans
+        self._closed_trace_sessions: dict[str, Trace] = {}
         self._storage_path = storage_path
 
     # ------------------------------------------------------------------
-    # Legacy API (kept for backward compatibility)
+    # Flat trace compatibility API (kept for backward compatibility)
     # ------------------------------------------------------------------
 
     def start_trace(self) -> str:
@@ -141,17 +143,46 @@ class TraceStore:
         session = self._trace_sessions.get(trace_id)
         if session is None:
             return
-        span.parent_span_id = parent_span_id or session.root_span.span_id
-        session.root_span.children.append(span)
+        if span.end_time is not None:
+            duration_ms = (
+                span.end_time - span.start_time
+            ).total_seconds() * 1000
+            span.metadata["duration_ms"] = duration_ms
+        parent = (
+            self._find_span(session.root_span, parent_span_id)
+            if parent_span_id
+            else None
+        )
+        if parent is None:
+            parent = session.root_span
+        span.parent_span_id = parent.span_id
+        parent.children.append(span)
 
     def close_trace(self, trace_id: str) -> Trace | None:
         trace = self._trace_sessions.pop(trace_id, None)
         if trace is not None:
             self._persist(trace)
+            self._closed_trace_sessions[trace_id] = trace
         return trace
 
     def get_trace_session(self, trace_id: str) -> Trace | None:
         return self._trace_sessions.get(trace_id)
+
+    def get_trace_tree(self, trace_id: str) -> Trace | None:
+        return self._trace_sessions.get(trace_id) or self._closed_trace_sessions.get(
+            trace_id
+        )
+
+    def _find_span(self, span: TraceSpan, span_id: str | None) -> TraceSpan | None:
+        if not span_id:
+            return None
+        if span.span_id == span_id:
+            return span
+        for child in span.children:
+            found = self._find_span(child, span_id)
+            if found is not None:
+                return found
+        return None
 
     def _persist(self, trace: Trace) -> None:
         storage = self._storage_path
