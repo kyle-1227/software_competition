@@ -6,6 +6,7 @@ from typing import Any
 from app.core.config import settings
 from app.schemas.query import EvaluationResult
 from app.services.agent_loop.retry import execute_tool_with_retry
+from app.services.answer_generation import draft_answer_with_llm
 
 logger = logging.getLogger(__name__)
 
@@ -52,18 +53,12 @@ class EvaluatorOptimizer:
             if iteration == 0:
                 # First generation: use existing answer or generate
                 if not best_answer.strip():
-                    from app.services.graph.graph_builder import (
-                        _draft_answer_with_llm,
-                    )
-                    draft_result = await _draft_answer_with_llm(services, state)
+                    draft_result = await draft_answer_with_llm(services, state)
                     best_answer = draft_result.get("answer", "")
             else:
                 # Regenerate with feedback
                 regen_state = {**state, "evaluation_feedback": feedback}
-                from app.services.graph.graph_builder import (
-                    _draft_answer_with_llm,
-                )
-                draft_result = await _draft_answer_with_llm(services, regen_state)
+                draft_result = await draft_answer_with_llm(services, regen_state)
                 best_answer = draft_result.get("answer", "")
 
             if not best_answer.strip():
