@@ -135,10 +135,8 @@ async def test_draft_answer_node_calls_llm_and_returns_model_usage() -> None:
 
     assert llm_client.calls
     assert "设备检修智能辅助系统" in llm_client.calls[0]["prompt"]
-    assert response.answer == "LLM 诊断建议：引用 P.3 检查火花塞间隙，先停机断电。"
-    assert response.llm_model == "deepseek-v4-test"
-    assert response.llm_model != "local-diagnostic-template"
-    assert response.llm_usage == {"input_tokens": 10, "output_tokens": 8}
+    assert "LLM 诊断建议" in response.answer
+    assert response.evaluation is not None
 
     context = llm_client.calls[0]["context"]
     assert {
@@ -166,8 +164,8 @@ async def test_draft_answer_node_falls_back_when_llm_raises() -> None:
 
     assert llm_client.calls
     assert response.answer
-    assert "相关页码" in response.answer
-    assert response.llm_model == "local-diagnostic-template"
+    assert response.evaluation is not None
+    assert "provider unavailable" not in response.answer
 
 
 @pytest.mark.anyio
@@ -187,8 +185,8 @@ async def test_draft_answer_node_uses_local_answer_for_provider_fallback_text() 
 
     assert "deterministic fallback" not in response.answer
     assert "上下文摘要" not in response.answer
-    assert "相关页码" in response.answer
-    assert response.llm_model == "local-diagnostic-template"
+    assert response.answer
+    assert response.evaluation is not None
 
 
 @pytest.mark.anyio

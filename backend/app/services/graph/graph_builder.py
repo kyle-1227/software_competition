@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -15,7 +14,7 @@ from app.services.agent_loop.controller import (
     placeholder_used_in_state,
 )
 from app.services.agent_loop.policy import AgentLoopPolicy
-from app.services.agent_loop.retry import execute_sandbox_with_retry, execute_tool_with_retry
+from app.services.agent_loop.retry import execute_tool_with_retry
 from app.services.graph.state import HarnessState
 
 logger = logging.getLogger(__name__)
@@ -39,11 +38,7 @@ PROVIDER_FALLBACK_MARKERS = (
 
 
 def build_harness_graph(services) -> Any:
-    """Build a LangGraph-compatible harness or a safe fallback runner.
-
-    If settings.use_orchestrator is True, builds the new Orchestrator-Workers
-    graph. Otherwise builds the legacy 13-node DAG.
-    """
+    """Build the Orchestrator-Workers + Bounded Agent Loop graph."""
     checkpointer, warning = _build_checkpointer()
     if warning:
         logger.warning(warning)
@@ -55,47 +50,7 @@ def build_harness_graph(services) -> Any:
         logger.warning("LangGraph unavailable, using fallback runner: %s", exc)
         return _build_fallback_graph(services)
 
-    if getattr(settings, "use_orchestrator", False):
-        return _build_new_graph(services, StateGraph, END, checkpointer)
-    else:
-        return _build_legacy_graph(services, StateGraph, END, checkpointer)
-
-
-def _build_legacy_graph(services, StateGraph, END, checkpointer) -> Any:
-    """Legacy 13-node DAG (the original Prompt Chaining pattern)."""
-    graph = StateGraph(HarnessState)
-    nodes = _build_nodes(services)
-    graph.add_node("intake_node", nodes["intake_node"])
-    graph.add_node("memory_load_node", nodes["memory_load_node"])
-    graph.add_node("plan_node", nodes["plan_node"])
-    graph.add_node("retrieval_node", nodes["retrieval_node"])
-    graph.add_node("ai_coding_node", nodes["ai_coding_node"])
-    graph.add_node("sandbox_node", nodes["sandbox_node"])
-    graph.add_node("draft_answer_node", nodes["draft_answer_node"])
-    graph.add_node("compliance_node", nodes["compliance_node"])
-    graph.add_node("evaluator_node", nodes["evaluator_node"])
-    graph.add_node("trace_node", nodes["trace_node"])
-    graph.add_node("memory_save_node", nodes["memory_save_node"])
-    graph.add_node("finalize_node", nodes["finalize_node"])
-
-    graph.set_entry_point("intake_node")
-    graph.add_edge("intake_node", "memory_load_node")
-    graph.add_edge("memory_load_node", "plan_node")
-    graph.add_edge("plan_node", "retrieval_node")
-    graph.add_conditional_edges(
-        "retrieval_node",
-        nodes["route_ai_coding"],
-        {"ai_coding": "ai_coding_node", "draft": "draft_answer_node"},
-    )
-    graph.add_edge("ai_coding_node", "sandbox_node")
-    graph.add_edge("sandbox_node", "draft_answer_node")
-    graph.add_edge("draft_answer_node", "compliance_node")
-    graph.add_edge("compliance_node", "evaluator_node")
-    graph.add_edge("evaluator_node", "trace_node")
-    graph.add_edge("trace_node", "memory_save_node")
-    graph.add_edge("memory_save_node", "finalize_node")
-    graph.add_edge("finalize_node", END)
-    return graph.compile(checkpointer=checkpointer)
+    return _build_new_graph(services, StateGraph, END, checkpointer)
 
 
 def _build_new_graph(services, StateGraph, END, checkpointer) -> Any:
@@ -249,7 +204,7 @@ def _build_new_graph(services, StateGraph, END, checkpointer) -> Any:
     return graph.compile(checkpointer=checkpointer)
 
 
-def _build_nodes(services) -> dict[str, Any]:
+def _build_shared_nodes(services) -> dict[str, Any]:
     async def intake_node(state: dict[str, Any]) -> dict[str, Any]:
         session_id = (
             state.get("session_id")
@@ -291,136 +246,6 @@ def _build_nodes(services) -> dict[str, Any]:
     async def memory_load_node(state: dict[str, Any]) -> dict[str, Any]:
         history = services.memory_store.get_history(state["session_id"])
         return {"memory": history}
-
-    async def plan_node(state: dict[str, Any]) -> dict[str, Any]:
-        plan = [
-            {"step": "plan: 识别故障现象、设备对象和检索意图", "status": "completed"},
-            {"step": "retrieve: 调用 manual_lookup 检索维修手册证据", "status": "completed"},
-            {"step": "evaluate: 评估证据充分性、安全性和合规性", "status": "completed"},
-            {"step": "answer: 汇总页码、证据片段和初步诊断建议", "status": "completed"},
-        ]
-        return {"plan": plan, "needs_ai_coding": _needs_ai_coding(state["question"])}
-
-    async def retrieval_node(state: dict[str, Any]) -> dict[str, Any]:
-        result = await services.tool_registry.execute(
-            "manual_lookup",
-            {
-                "question": state["question"],
-                "device_name": state.get("device_name"),
-                "device_model": state.get("device_model"),
-            },
-        )
-        evidence = []
-        if result.success and isinstance(result.data, list):
-            evidence = [item for item in result.data if isinstance(item, dict)]
-        tool_calls = [
-            {
-                "tool_name": result.tool_name,
-                "input": {"question": state["question"]},
-                "output": result.data if result.success else {"error": result.error},
-                "status": "success" if result.success else "failed",
-                "duration_ms": result.metadata.get("duration_ms"),
-            }
-        ]
-        return {
-            "evidence": evidence,
-            "tool_calls": tool_calls,
-            "warnings": state.get("warnings", [])
-            + ([] if evidence else ["未检索到手册证据"]),
-        }
-
-    async def ai_coding_node(state: dict[str, Any]) -> dict[str, Any]:
-        retry_result = await execute_tool_with_retry(
-            services.tool_registry,
-            "ai_coding",
-            {
-                "question": state["question"],
-                "task": state["question"],
-                "language": "sql" if "sql" in state["question"].lower() else "python",
-            },
-        )
-        result = retry_result.result
-        data = result.data if result is not None and isinstance(result.data, dict) else {}
-        ai_coding = {
-            "language": data.get("language", "python"),
-            "script": "" if retry_result.degraded else data.get("script", ""),
-            "explanation": data.get("explanation", ""),
-            "warnings": data.get("warnings", []),
-            "degraded": retry_result.degraded,
-            "requires_human_approval": data.get("requires_human_approval", False),
-        }
-        tool_calls = state.get("tool_calls", []) + retry_result.tool_calls
-        return {
-            "ai_coding": ai_coding,
-            "tool_calls": tool_calls,
-            "degradation_events": state.get("degradation_events", [])
-            + retry_result.degradation_events,
-            "requires_human_approval": retry_result.degraded,
-            "approval_reason": (
-                "ai_coding 连续失败，需要人工确认"
-                if retry_result.degraded
-                else state.get("approval_reason")
-            ),
-        }
-
-    async def sandbox_node(state: dict[str, Any]) -> dict[str, Any]:
-        ai_coding = state.get("ai_coding") or {}
-        script = str(ai_coding.get("script", ""))
-        language = str(ai_coding.get("language", "python"))
-        if ai_coding.get("degraded") or ai_coding.get("requires_human_approval"):
-            sandbox_result = {
-                "language": language,
-                "allowed": False,
-                "return_code": None,
-                "stdout": "",
-                "stderr": "",
-                "error": "ai_coding degraded; sandbox execution skipped",
-                "duration_ms": None,
-            }
-            return {
-                "ai_coding": {**ai_coding, "script": "", "sandbox_result": sandbox_result},
-                "sandbox_result": sandbox_result,
-                "tool_calls": state.get("tool_calls", []),
-                "requires_human_approval": True,
-                "approval_reason": state.get("approval_reason")
-                or "ai_coding degraded; sandbox execution skipped",
-                "warnings": _dedupe_strings(
-                    state.get("warnings", [])
-                    + ["ai_coding degraded; sandbox execution skipped"]
-                ),
-            }
-        retry_result = await execute_sandbox_with_retry(
-            services.sandbox_executor,
-            script,
-            language,
-        )
-        result = retry_result.result
-        sandbox_result = (
-            result.data
-            if result is not None and isinstance(result.data, dict)
-            else {
-                "language": language,
-                "allowed": False,
-                "return_code": None,
-                "error": "sandbox execution unavailable",
-            }
-        )
-        ai_coding = {**ai_coding, "sandbox_result": sandbox_result}
-        if retry_result.degraded:
-            ai_coding["script"] = ""
-        return {
-            "ai_coding": ai_coding,
-            "sandbox_result": sandbox_result,
-            "tool_calls": state.get("tool_calls", []) + retry_result.tool_calls,
-            "degradation_events": state.get("degradation_events", [])
-            + retry_result.degradation_events,
-            "requires_human_approval": retry_result.degraded,
-            "approval_reason": (
-                "sandbox execution failed after retries"
-                if retry_result.degraded
-                else state.get("approval_reason")
-            ),
-        }
 
     async def draft_answer_node(state: dict[str, Any]) -> dict[str, Any]:
         return await _draft_answer_with_llm(services, state)
@@ -530,23 +355,15 @@ def _build_nodes(services) -> dict[str, Any]:
             ]
         return {"response": response, **response}
 
-    def route_ai_coding(state: dict[str, Any]) -> str:
-        return "ai_coding" if state.get("needs_ai_coding") else "draft"
-
     return {
         "intake_node": intake_node,
         "memory_load_node": memory_load_node,
-        "plan_node": plan_node,
-        "retrieval_node": retrieval_node,
-        "ai_coding_node": ai_coding_node,
-        "sandbox_node": sandbox_node,
         "draft_answer_node": draft_answer_node,
         "compliance_node": compliance_node,
         "evaluator_node": evaluator_node,
         "trace_node": trace_node,
         "memory_save_node": memory_save_node,
         "finalize_node": finalize_node,
-        "route_ai_coding": route_ai_coding,
     }
 
 
@@ -604,10 +421,10 @@ def _build_new_nodes(services) -> dict[str, Any]:
 
     Reuses intake_node, memory_load_node, draft_answer_node, compliance_node,
     evaluator_node, trace_node, memory_save_node, and finalize_node from
-    _build_nodes for maximum code sharing.
+    _build_shared_nodes for maximum code sharing.
     """
     _ensure_new_services(services)
-    legacy_nodes = _build_nodes(services)
+    shared_nodes = _build_shared_nodes(services)
 
     async def input_guardrail_node(state: dict[str, Any]) -> dict[str, Any]:
         result = await services.input_guardrail.check(
@@ -723,18 +540,19 @@ def _build_new_nodes(services) -> dict[str, Any]:
         }
 
         if not merged_evidence and not worker_evidence and _decision_needs_evidence(decision):
-            fallback = await legacy_nodes["retrieval_node"]({**state, **update})
+            fallback = await _run_manual_lookup_with_retry({**state, **update}, services)
             fallback_evidence = fallback.get("evidence", [])
             if isinstance(fallback_evidence, list):
-                update["evidence"] = _dedupe_evidence(merged_evidence + fallback_evidence)
+                update["evidence"] = _dedupe_evidence(fallback_evidence)
             fallback_tool_calls = fallback.get("tool_calls", [])
             if isinstance(fallback_tool_calls, list):
-                update["tool_calls"] = _dedupe_tool_calls(
-                    merged_tool_calls + fallback_tool_calls
-                )
+                update["tool_calls"] = _dedupe_tool_calls(fallback_tool_calls)
             fallback_warnings = fallback.get("warnings", [])
             if isinstance(fallback_warnings, list):
-                update["warnings"] = _dedupe_strings(merged_warnings + fallback_warnings)
+                update["warnings"] = _dedupe_strings(fallback_warnings)
+            fallback_events = fallback.get("degradation_events", [])
+            if isinstance(fallback_events, list):
+                update["degradation_events"] = fallback_events
 
         if merged_sop:
             update["sop"] = merged_sop
@@ -770,42 +588,22 @@ def _build_new_nodes(services) -> dict[str, Any]:
 
     async def retrieval_retry_node(state: dict[str, Any]) -> dict[str, Any]:
         retry_count = int(state.get("retrieval_retry_count", 0) or 0) + 1
-        retry_question = _build_retry_query(state)
-        retry_result = await execute_tool_with_retry(
-            services.tool_registry,
-            "manual_lookup",
-            {
-                "question": retry_question,
-                "device_name": state.get("device_name"),
-                "device_model": state.get("device_model"),
-            },
-            max_retries=services.agent_loop_policy.max_tool_retries,
-            backoff_ms=services.agent_loop_policy.retry_backoff_ms,
+        lookup = await _run_manual_lookup_with_retry(
+            state,
+            services,
+            question_override=_build_retry_query(state),
         )
-        evidence: list[dict[str, Any]] = []
-        if (
-            retry_result.result is not None
-            and retry_result.result.success
-            and isinstance(retry_result.result.data, list)
-        ):
-            evidence = [item for item in retry_result.result.data if isinstance(item, dict)]
-
-        merged_evidence = _dedupe_evidence(state.get("evidence", []) + evidence)
-        merged_tool_calls = _dedupe_tool_calls(
-            state.get("tool_calls", []) + retry_result.tool_calls
-        )
-        degradation_events = list(state.get("degradation_events", []))
-        degradation_events.extend(retry_result.degradation_events)
-        warnings = _dedupe_strings(state.get("warnings", []))
-        if not any(has_effective_evidence({"evidence": [item]}) for item in evidence):
+        degradation_events = list(lookup.get("degradation_events", []))
+        warnings = _dedupe_strings(lookup.get("warnings", []))
+        if not has_effective_evidence(lookup):
             warnings = _dedupe_strings(
-                warnings + ["检索重试后仍未获得有效手册证据"]
+                warnings + ["retrieval retry returned no effective manual evidence"]
             )
             degradation_events.append(
                 {
                     "type": "retrieval_degraded",
                     "tool_name": "manual_lookup",
-                    "attempts": retry_result.attempts,
+                    "attempts": lookup.get("_manual_lookup_attempts", 0),
                     "reason": "retrieval retry returned no effective evidence",
                     "fallback": "clarification or fail-safe",
                 }
@@ -814,8 +612,8 @@ def _build_new_nodes(services) -> dict[str, Any]:
         return {
             "question": state.get("question", ""),
             "retrieval_retry_count": retry_count,
-            "evidence": merged_evidence,
-            "tool_calls": merged_tool_calls,
+            "evidence": lookup.get("evidence", []),
+            "tool_calls": lookup.get("tool_calls", []),
             "warnings": warnings,
             "degradation_events": degradation_events,
         }
@@ -903,16 +701,16 @@ def _build_new_nodes(services) -> dict[str, Any]:
         return "evaluate" if has_effective_evidence(state) else "decide"
 
     return {
-        "intake_node": legacy_nodes["intake_node"],
+        "intake_node": shared_nodes["intake_node"],
         "input_guardrail_node": input_guardrail_node,
-        "memory_load_node": legacy_nodes["memory_load_node"],
+        "memory_load_node": shared_nodes["memory_load_node"],
         "orchestrator_node": orchestrator_node,
         "worker_executor_node": worker_executor_node,
         "loop_decision_node": loop_decision_node,
         "retrieval_retry_node": retrieval_retry_node,
-        "draft_answer_node": legacy_nodes["draft_answer_node"],
-        "compliance_node": legacy_nodes["compliance_node"],
-        "evaluator_node": legacy_nodes["evaluator_node"],
+        "draft_answer_node": shared_nodes["draft_answer_node"],
+        "compliance_node": shared_nodes["compliance_node"],
+        "evaluator_node": shared_nodes["evaluator_node"],
         "evaluator_optimizer_node": evaluator_optimizer_node,
         "post_eval_loop_decision_node": post_eval_loop_decision_node,
         "answer_regeneration_node": answer_regeneration_node,
@@ -920,13 +718,65 @@ def _build_new_nodes(services) -> dict[str, Any]:
         "clarification_node": clarification_node,
         "fail_safe_node": fail_safe_node,
         "output_guardrail_node": output_guardrail_node,
-        "trace_node": legacy_nodes["trace_node"],
-        "memory_save_node": legacy_nodes["memory_save_node"],
-        "finalize_node": legacy_nodes["finalize_node"],
+        "trace_node": shared_nodes["trace_node"],
+        "memory_save_node": shared_nodes["memory_save_node"],
+        "finalize_node": shared_nodes["finalize_node"],
         "route_after_guardrail": route_after_guardrail,
         "route_loop_decision": route_loop_decision,
         "route_after_retrieval_retry": route_after_retrieval_retry,
         "route_post_eval_loop_decision": route_post_eval_loop_decision,
+    }
+
+
+async def _run_manual_lookup_with_retry(
+    state: dict[str, Any],
+    services,
+    question_override: str | None = None,
+) -> dict[str, Any]:
+    policy = getattr(services, "agent_loop_policy", AgentLoopPolicy.from_settings())
+    question = question_override or state.get("question", "")
+    retry_result = await execute_tool_with_retry(
+        services.tool_registry,
+        "manual_lookup",
+        {
+            "question": question,
+            "device_name": state.get("device_name"),
+            "device_model": state.get("device_model"),
+        },
+        max_retries=policy.max_tool_retries,
+        backoff_ms=policy.retry_backoff_ms,
+    )
+    evidence: list[dict[str, Any]] = []
+    if (
+        retry_result.result is not None
+        and retry_result.result.success
+        and isinstance(retry_result.result.data, list)
+    ):
+        evidence = [item for item in retry_result.result.data if isinstance(item, dict)]
+
+    merged_evidence = _dedupe_evidence(state.get("evidence", []) + evidence)
+    merged_tool_calls = _dedupe_tool_calls(
+        state.get("tool_calls", []) + retry_result.tool_calls
+    )
+    warnings = _dedupe_strings(state.get("warnings", []))
+    if not has_effective_evidence({"evidence": evidence}):
+        warnings = _dedupe_strings(
+            warnings + ["manual_lookup returned no effective manual evidence"]
+        )
+
+    degradation_events = list(
+        state.get("degradation_events", [])
+        if isinstance(state.get("degradation_events"), list)
+        else []
+    )
+    degradation_events.extend(retry_result.degradation_events)
+
+    return {
+        "evidence": merged_evidence,
+        "tool_calls": merged_tool_calls,
+        "warnings": warnings,
+        "degradation_events": degradation_events,
+        "_manual_lookup_attempts": retry_result.attempts,
     }
 
 
@@ -950,31 +800,72 @@ def _build_fallback_graph(services):
     class _FallbackGraph:
         async def ainvoke(self, state, config=None):
             del config
-            if getattr(settings, "use_input_guardrail", False):
-                nodes = _build_new_nodes(services)
-                current = await nodes["intake_node"](state)
-                current |= await nodes["input_guardrail_node"]({**state, **current})
-                if nodes["route_after_guardrail"]({**state, **current}) == "blocked":
-                    current |= await nodes["finalize_node"]({**state, **current})
-                    return current
-            return await self._ainvoke_legacy_graph(state)
+            nodes = _build_new_nodes(services)
+            policy = getattr(services, "agent_loop_policy", AgentLoopPolicy.from_settings())
+            current: dict[str, Any] = {}
 
-        async def _ainvoke_legacy_graph(self, state):
-            nodes = _build_nodes(services)
-            current = await nodes["intake_node"](state)
-            current |= await nodes["memory_load_node"]({**state, **current})
-            current |= await nodes["plan_node"]({**state, **current})
-            current |= await nodes["retrieval_node"]({**state, **current})
-            if current.get("needs_ai_coding"):
-                current |= await nodes["ai_coding_node"]({**state, **current})
-                current |= await nodes["sandbox_node"]({**state, **current})
-            current |= await nodes["draft_answer_node"]({**state, **current})
-            current |= await nodes["compliance_node"]({**state, **current})
-            current |= await nodes["evaluator_node"]({**state, **current})
-            current |= await nodes["trace_node"]({**state, **current})
-            current |= await nodes["memory_save_node"]({**state, **current})
-            current |= await nodes["finalize_node"]({**state, **current})
-            return current
+            async def apply(node_name: str) -> None:
+                nonlocal current
+                current |= await nodes[node_name]({**state, **current})
+
+            async def finish() -> dict[str, Any]:
+                if getattr(settings, "use_output_guardrail", False):
+                    await apply("output_guardrail_node")
+                await apply("trace_node")
+                await apply("memory_save_node")
+                await apply("finalize_node")
+                return current
+
+            await apply("intake_node")
+            await apply("input_guardrail_node")
+            if nodes["route_after_guardrail"]({**state, **current}) == "blocked":
+                await apply("finalize_node")
+                return current
+
+            await apply("memory_load_node")
+            await apply("orchestrator_node")
+            await apply("worker_executor_node")
+
+            for _ in range(policy.max_loop_steps + 1):
+                await apply("loop_decision_node")
+                route = nodes["route_loop_decision"]({**state, **current})
+                if route == "retry_retrieval":
+                    await apply("retrieval_retry_node")
+                    retry_route = nodes["route_after_retrieval_retry"]({**state, **current})
+                    if retry_route == "evaluate":
+                        break
+                    continue
+                if route in {"approval", "clarification", "fail_safe"}:
+                    await apply(f"{route}_node")
+                    return await finish()
+                break
+
+            if getattr(settings, "use_evaluator_optimizer", False):
+                for _ in range(policy.max_answer_regenerations + 1):
+                    await apply("evaluator_optimizer_node")
+                    await apply("post_eval_loop_decision_node")
+                    route = nodes["route_post_eval_loop_decision"]({**state, **current})
+                    if route == "regenerate":
+                        await apply("answer_regeneration_node")
+                        continue
+                    if route in {"approval", "clarification", "fail_safe"}:
+                        await apply(f"{route}_node")
+                    break
+            else:
+                for _ in range(policy.max_answer_regenerations + 1):
+                    await apply("draft_answer_node")
+                    await apply("compliance_node")
+                    await apply("evaluator_node")
+                    await apply("post_eval_loop_decision_node")
+                    route = nodes["route_post_eval_loop_decision"]({**state, **current})
+                    if route == "regenerate":
+                        await apply("answer_regeneration_node")
+                        continue
+                    if route in {"approval", "clarification", "fail_safe"}:
+                        await apply(f"{route}_node")
+                    break
+
+            return await finish()
 
     return _FallbackGraph()
 
@@ -1249,11 +1140,6 @@ def _decision_needs_evidence(decision: Any) -> bool:
     return any(worker in {"fault_triage", "sop_guidance"} for worker in workers)
 
 
-def _needs_ai_coding(question: str) -> bool:
-    lowered = question.lower()
-    return any(keyword in lowered for keyword in ("脚本", "代码", "script", "code"))
-
-
 def _build_diagnostic_answer(state: dict[str, Any]) -> str:
     question = str(state.get("question") or "").strip()
     device = state.get("device_model") or state.get("device_name") or "当前设备"
@@ -1465,10 +1351,6 @@ def _compact_snippet(snippet: str, limit: int = 150) -> str:
     if len(compacted) <= limit:
         return compacted
     return compacted[:limit].rstrip() + "..."
-
-
-def _script_hash(script: str) -> str:
-    return hashlib.sha256(script.encode("utf-8")).hexdigest()
 
 
 def _tool_call_dict_to_model(item: dict[str, Any]):

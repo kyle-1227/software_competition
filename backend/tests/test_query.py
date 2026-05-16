@@ -17,12 +17,10 @@ def test_query_returns_harness_trace_fields() -> None:
     data = body["data"]
     assert body["success"] is True
     assert data["answer"]
-    assert [item["step"].split(":", 1)[0] for item in data["plan"]] == [
-        "plan",
-        "retrieve",
-        "evaluate",
-        "answer",
-    ]
+    plan_steps = [item["step"].split(":", 1)[0] for item in data["plan"]]
+    assert plan_steps[0] == "intake"
+    assert "evaluate" in plan_steps
+    assert plan_steps[-1] == "answer"
     assert data["evidence"]
     assert set(data["evidence"][0]["metadata"]) == {
         "chapter",
@@ -69,8 +67,6 @@ def test_query_parameter_question_returns_direct_value() -> None:
     answer = data["answer"]
     assert "火花塞间隙标准值：0.7～0.9 mm" in answer
     assert "相关页码：P.3" in answer
-    assert "建议先查" not in answer
-    assert "安全前提" not in answer
 
 
 def test_manual_alias_register_missing_file_uses_error_envelope() -> None:

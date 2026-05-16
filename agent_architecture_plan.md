@@ -69,9 +69,9 @@ LangGraph StateGraph
  |
  +-- intake_node          输入归一化、session_id、trace_id
  +-- memory_load_node     读取 session 历史摘要
- +-- plan_node            生成可展示计划
+ +-- planning_stage            生成可展示计划
  +-- retrieval_node       调用 manual_lookup 工具
- +-- route_ai_coding      判断是否进入 AI Coding 分支
+ +-- ai_coding_branch      判断是否进入 AI Coding 分支
  +-- ai_coding_node       生成 Python / SQL 脚本
  +-- sandbox_node         执行受限 Python / 只读 SQL
  +-- draft_answer_node    调用 DeepSeek V4 或 fallback 生成回答
@@ -125,13 +125,13 @@ intake_node
 memory_load_node
   |
   v
-plan_node
+planning_stage
   |
   v
 retrieval_node
   |
   v
-route_ai_coding
+ai_coding_branch
   |
   +-- needs_ai_coding = false --> draft_answer_node
   |
@@ -167,9 +167,9 @@ END
 节点	职责
 intake_node	保留 question/device/session_id，初始化 trace、warnings、tool_calls 等字段
 memory_load_node	按 session_id 读取历史摘要
-plan_node	生成当前检修任务计划
+planning_stage	生成当前检修任务计划
 retrieval_node	通过 manual_lookup 获取手册 evidence
-route_ai_coding	判断是否需要 AI Coding
+ai_coding_branch	判断是否需要 AI Coding
 ai_coding_node	生成脚本结构 {language, script, explanation, warnings}
 sandbox_node	对 Python / SQL 做受限执行，Shell 一律拒绝
 draft_answer_node	使用 prompt + context 调用 DeepSeek V4，失败时 fallback

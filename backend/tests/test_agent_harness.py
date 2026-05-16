@@ -12,12 +12,10 @@ async def test_agent_harness_answer_contains_traceable_outputs() -> None:
     )
 
     assert response.answer
-    assert [item.step.split(":", 1)[0] for item in response.plan] == [
-        "plan",
-        "retrieve",
-        "evaluate",
-        "answer",
-    ]
+    plan_steps = [item.step.split(":", 1)[0] for item in response.plan]
+    assert plan_steps[0] == "intake"
+    assert "evaluate" in plan_steps
+    assert plan_steps[-1] == "answer"
     assert response.evidence
     assert response.tool_calls
     assert response.evaluation is not None

@@ -4,7 +4,6 @@ import json
 import logging
 from typing import Any
 
-from app.core.config import settings
 from app.schemas.orchestrator import OrchestratorDecision
 
 logger = logging.getLogger(__name__)
@@ -92,7 +91,7 @@ class Orchestrator:
         history: list[dict[str, Any]] | None = None,
     ) -> OrchestratorDecision:
         """主入口：LLM 分类，失败时 fallback 到关键词分类。"""
-        if self._llm_client is not None and settings.use_orchestrator:
+        if self._llm_client is not None:
             try:
                 return await self._llm_classify(question, device_name, history)
             except Exception as exc:

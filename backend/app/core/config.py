@@ -22,10 +22,9 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------------------
     # Harness feature flags (Phase 0–4)
-    # Set to False to revert to legacy 13-node DAG behaviour.
+    # Orchestrator-Workers harness feature flags.
     # ------------------------------------------------------------------
     # Phase 1
-    use_orchestrator: bool = True
     use_input_guardrail: bool = True
     use_real_ai_coding: bool = True
     # Phase 2

@@ -101,7 +101,7 @@ class AgentLoopController:
             )
 
         if policy.high_risk_requires_approval and (
-            high_risk or _sandbox_unsafe(state) or _evaluation_unsafe(state)
+            high_risk or _sandbox_unsafe(state)
         ):
             return AgentLoopDecision(
                 action=AgentLoopAction.REQUIRE_APPROVAL,
@@ -155,7 +155,7 @@ def _is_placeholder(item: Any) -> bool:
 
 
 def _is_high_risk(state: dict[str, Any]) -> bool:
-    text = f"{state.get('question', '')}\n{state.get('answer', '')}"
+    text = str(state.get("question", ""))
     return any(term in text for term in _HIGH_RISK_TERMS)
 
 
