@@ -1,59 +1,53 @@
 from __future__ import annotations
 
-import json
+import hashlib
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import uuid4
-
 from typing import Any
+from uuid import uuid4
 
 from app.core.config import settings
 from app.schemas.query import EvidenceItem, EvaluationResult, PlanStep, ToolCallItem
 from app.schemas.trace import SpanKind, SpanStatus, Trace, TraceSpan
+from app.services.tracing.repository import TraceRepository, build_trace_repository
 
 logger = logging.getLogger(__name__)
 
 
 class TraceStore:
-    """Execution trace store with nested span model + flat trace compatibility.
+    """Execution trace store with nested spans and pluggable persistence."""
 
-    New code uses start_trace_session / add_span / close_trace with the
-    Trace/TraceSpan pydantic models. Flat record_* methods are preserved for
-    the current trace_node and flat trace readers; they can be cleaned up later
-    after span coverage is complete.
-    """
-
-    def __init__(self, storage_path: Path | None = None) -> None:
-        self._traces: dict[str, dict[str, object]] = {}  # legacy flat dicts
-        self._trace_sessions: dict[str, Trace] = {}       # new nested spans
+    def __init__(
+        self,
+        storage_path: Path | None = None,
+        repository: TraceRepository | None = None,
+    ) -> None:
+        self._traces: dict[str, dict[str, object]] = {}
+        self._trace_sessions: dict[str, Trace] = {}
         self._closed_trace_sessions: dict[str, Trace] = {}
         self._storage_path = storage_path
+        self._repository = repository or build_trace_repository(storage_path)
 
     # ------------------------------------------------------------------
-    # Flat trace compatibility API (kept for backward compatibility)
+    # Flat trace compatibility API
     # ------------------------------------------------------------------
 
-    def start_trace(self) -> str:
-        """Legacy: returns trace_id string. Also creates a Trace session."""
-        trace_id = str(uuid4())
-        self._traces[trace_id] = {
-            "plan": [],
-            "tool_calls": [],
-            "evidence": [],
-            "answer": None,
-            "evaluation": None,
-            "memory": [],
-            "sandbox_result": None,
-        }
-        root_span = TraceSpan(name="harness", kind=SpanKind.AGENT)
-        self._trace_sessions[trace_id] = Trace(
-            trace_id=trace_id,
-            session_id="",
-            question="",
-            root_span=root_span,
+    def start_trace(
+        self,
+        session_id: str | None = None,
+        question: str | None = None,
+        user_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Legacy-compatible start method. Returns a trace_id string."""
+        trace = self.start_trace_session(
+            session_id=session_id or "default",
+            question=question or "unknown",
+            user_id=user_id,
+            metadata=metadata,
         )
-        return trace_id
+        return trace.trace_id
 
     def record_plan(self, trace_id: str, plan: list[PlanStep]) -> None:
         self._ensure_trace(trace_id)["plan"] = plan
@@ -70,9 +64,7 @@ class TraceStore:
     def record_answer(self, trace_id: str, answer: str) -> None:
         self._ensure_trace(trace_id)["answer"] = answer
 
-    def record_evaluation(
-        self, trace_id: str, evaluation: EvaluationResult
-    ) -> None:
+    def record_evaluation(self, trace_id: str, evaluation: EvaluationResult) -> None:
         self._ensure_trace(trace_id)["evaluation"] = evaluation
 
     def record_memory(self, trace_id: str, memory: list[dict[str, Any]]) -> None:
@@ -88,49 +80,63 @@ class TraceStore:
 
     def _ensure_trace(self, trace_id: str) -> dict[str, object]:
         if trace_id not in self._traces:
-            self._traces[trace_id] = {
-                "plan": [],
-                "tool_calls": [],
-                "evidence": [],
-                "answer": None,
-                "evaluation": None,
-                "memory": [],
-                "sandbox_result": None,
-            }
+            self._traces[trace_id] = _empty_flat_trace()
             if trace_id not in self._trace_sessions:
                 root_span = TraceSpan(name="harness", kind=SpanKind.AGENT)
                 self._trace_sessions[trace_id] = Trace(
                     trace_id=trace_id,
-                    session_id="",
-                    question="",
+                    session_id="default",
+                    question="unknown",
                     root_span=root_span,
+                    app_env=getattr(settings, "app_env", None),
                 )
         return self._traces[trace_id]
 
     # ------------------------------------------------------------------
-    # New nested-span API (Phase 3)
+    # Nested-span API
     # ------------------------------------------------------------------
 
-    def start_trace_session(self, session_id: str, question: str) -> Trace:
+    def start_trace_session(
+        self,
+        session_id: str,
+        question: str,
+        user_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Trace:
+        metadata = metadata or {}
         trace_id = str(uuid4())
-        root_span = TraceSpan(name="harness", kind=SpanKind.AGENT)
+        created_at = datetime.now(timezone.utc)
+        root_span = TraceSpan(
+            name="harness",
+            kind=SpanKind.AGENT,
+            trace_id=trace_id,
+            start_time=created_at,
+        )
         trace = Trace(
             trace_id=trace_id,
-            session_id=session_id,
-            question=question,
+            run_id=str(uuid4()),
+            session_id=session_id or "default",
+            user_id=user_id,
+            question=question or "unknown",
+            normalized_question=_normalize_question(question or ""),
             root_span=root_span,
+            app_env=getattr(settings, "app_env", None),
+            app_version=str(metadata.get("app_version") or ""),
+            git_commit=metadata.get("git_commit"),
+            llm_provider=metadata.get("llm_provider"),
+            llm_model=metadata.get("llm_model"),
+            embedding_model=metadata.get("embedding_model"),
+            reranker_model=metadata.get("reranker_model"),
+            manual_id=metadata.get("manual_id"),
+            index_version=metadata.get("index_version"),
+            index_sha256=metadata.get("index_sha256"),
+            feature_flags=metadata.get("feature_flags", {}),
+            status="running",
+            created_at=created_at,
         )
         self._trace_sessions[trace_id] = trace
-        # Also init legacy dict for compat
-        self._traces[trace_id] = {
-            "plan": [],
-            "tool_calls": [],
-            "evidence": [],
-            "answer": None,
-            "evaluation": None,
-            "memory": [],
-            "sandbox_result": None,
-        }
+        self._traces[trace_id] = _empty_flat_trace()
+        self._safe_repo_call("save_trace", self._repository.save_trace, trace)
         return trace
 
     def add_span(
@@ -139,39 +145,91 @@ class TraceStore:
         span: TraceSpan,
         parent_span_id: str | None = None,
     ) -> None:
-        """Add a span to a trace session. Appends as child of parent or root."""
         session = self._trace_sessions.get(trace_id)
         if session is None:
             return
+        span.trace_id = trace_id
         if span.end_time is not None:
-            duration_ms = (
-                span.end_time - span.start_time
-            ).total_seconds() * 1000
+            duration_ms = (span.end_time - span.start_time).total_seconds() * 1000
+            span.duration_ms = duration_ms
             span.metadata["duration_ms"] = duration_ms
-        parent = (
-            self._find_span(session.root_span, parent_span_id)
-            if parent_span_id
-            else None
+        span.fallback_used = span.fallback_used or _truthy(
+            span.metadata.get("fallback_used") or span.outputs.get("fallback_used")
         )
+        span.degraded = span.degraded or _truthy(
+            span.metadata.get("degraded") or span.outputs.get("degraded")
+        )
+        if span.attempt is None and span.metadata.get("attempt") is not None:
+            span.attempt = _optional_int(span.metadata.get("attempt"))
+        if span.retry_count is None and span.metadata.get("retry_count") is not None:
+            span.retry_count = _optional_int(span.metadata.get("retry_count"))
+
+        parent = self._find_span(session.root_span, parent_span_id) if parent_span_id else None
         if parent is None:
             parent = session.root_span
         span.parent_span_id = parent.span_id
         parent.children.append(span)
+        self._safe_repo_call("save_span", self._repository.save_span, trace_id, span)
 
-    def close_trace(self, trace_id: str) -> Trace | None:
+    def close_trace(self, trace_id: str, status: str | None = None) -> Trace | None:
         trace = self._trace_sessions.pop(trace_id, None)
-        if trace is not None:
-            self._persist(trace)
-            self._closed_trace_sessions[trace_id] = trace
+        if trace is None:
+            return self._closed_trace_sessions.get(trace_id)
+
+        trace.closed_at = datetime.now(timezone.utc)
+        trace.root_span.end_time = trace.closed_at
+        trace.total_duration_ms = (
+            trace.closed_at - trace.created_at
+        ).total_seconds() * 1000
+        trace.root_span.duration_ms = trace.total_duration_ms
+        trace.status = status or ("error" if _trace_has_error(trace) else "ok")
+        answer = self._traces.get(trace_id, {}).get("answer")
+        if isinstance(answer, str) and answer:
+            trace.final_answer_hash = hashlib.sha256(answer.encode("utf-8")).hexdigest()
+        self._safe_repo_call("close_trace", self._repository.close_trace, trace)
+        self._closed_trace_sessions[trace_id] = trace
         return trace
 
     def get_trace_session(self, trace_id: str) -> Trace | None:
         return self._trace_sessions.get(trace_id)
 
     def get_trace_tree(self, trace_id: str) -> Trace | None:
-        return self._trace_sessions.get(trace_id) or self._closed_trace_sessions.get(
-            trace_id
-        )
+        trace = self._trace_sessions.get(trace_id) or self._closed_trace_sessions.get(trace_id)
+        if trace is not None:
+            return trace
+        try:
+            return self._repository.get_trace(trace_id)
+        except Exception as exc:
+            logger.warning("Failed to load trace %s from repository: %s", trace_id, exc)
+            return None
+
+    def list_traces(
+        self,
+        limit: int = 50,
+        session_id: str | None = None,
+        status: str | None = None,
+    ) -> list[Trace]:
+        try:
+            return self._repository.list_traces(limit, session_id, status)
+        except Exception as exc:
+            logger.warning("Failed to list traces from repository: %s", exc)
+            return list(self._closed_trace_sessions.values())[-limit:]
+
+    def list_spans(self, trace_id: str) -> list[TraceSpan]:
+        trace = self._trace_sessions.get(trace_id) or self._closed_trace_sessions.get(trace_id)
+        if trace is not None:
+            return [span for span in _walk_spans(trace.root_span) if span is not trace.root_span]
+        try:
+            return self._repository.list_spans(trace_id)
+        except Exception as exc:
+            logger.warning("Failed to list spans for trace %s: %s", trace_id, exc)
+            return []
+
+    def healthcheck(self) -> bool:
+        try:
+            return self._repository.healthcheck()
+        except Exception:
+            return False
 
     def _find_span(self, span: TraceSpan, span_id: str | None) -> TraceSpan | None:
         if not span_id:
@@ -184,19 +242,48 @@ class TraceStore:
                 return found
         return None
 
-    def _persist(self, trace: Trace) -> None:
-        storage = self._storage_path
-        if storage is None:
-            # Derive from settings
-            storage_path_str = getattr(settings, "trace_storage_path", "../data/traces")
-            storage = Path(storage_path_str)
-            if not storage.is_absolute():
-                storage = Path(__file__).resolve().parents[3] / storage_path_str
-
+    @staticmethod
+    def _safe_repo_call(label: str, fn, *args) -> None:
         try:
-            storage.mkdir(parents=True, exist_ok=True)
-            filepath = storage / "traces.jsonl"
-            with filepath.open("a", encoding="utf-8") as f:
-                f.write(trace.model_dump_json() + "\n")
+            fn(*args)
         except Exception as exc:
-            logger.warning("Failed to persist trace %s: %s", trace.trace_id, exc)
+            logger.warning("Trace repository %s failed: %s", label, exc)
+
+
+def _empty_flat_trace() -> dict[str, object]:
+    return {
+        "plan": [],
+        "tool_calls": [],
+        "evidence": [],
+        "answer": None,
+        "evaluation": None,
+        "memory": [],
+        "sandbox_result": None,
+    }
+
+
+def _walk_spans(span: TraceSpan):
+    yield span
+    for child in span.children:
+        yield from _walk_spans(child)
+
+
+def _trace_has_error(trace: Trace) -> bool:
+    return any(span.status == SpanStatus.ERROR for span in _walk_spans(trace.root_span))
+
+
+def _normalize_question(question: str) -> str:
+    return " ".join(str(question or "").lower().split())
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

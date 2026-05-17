@@ -12,6 +12,10 @@ sys.path.insert(0, str(BACKEND_DIR))
 # 单元测试默认离线运行，避免真实 .env 中的 DeepSeek key 触发外部调用。
 os.environ["DEEPSEEK_API_KEY"] = ""
 os.environ["SILICONFLOW_API_KEY"] = ""
+if os.environ.get("RUN_POSTGRES_TESTS") != "true":
+    os.environ["TRACE_BACKEND"] = "jsonl"
+    os.environ["TRACE_DATABASE_URL"] = ""
+    os.environ["DATABASE_URL"] = ""
 
 
 @pytest.fixture

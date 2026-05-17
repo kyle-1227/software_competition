@@ -35,6 +35,13 @@ async def trace_span(
     inputs: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
     parent_span_id: str | None = None,
+    attempt: int | None = None,
+    retry_count: int | None = None,
+    fallback_used: bool | None = None,
+    degraded: bool | None = None,
+    token_usage: dict[str, Any] | None = None,
+    cost_estimate: dict[str, Any] | None = None,
+    quality: dict[str, Any] | None = None,
 ):
     if trace_store is None or not trace_id:
         yield TraceSpanContext()
@@ -47,6 +54,13 @@ async def trace_span(
         start_time=datetime.now(timezone.utc),
         inputs=sanitize_trace_dict(inputs or {}),
         metadata=sanitize_trace_dict(metadata or {}),
+        attempt=attempt,
+        retry_count=retry_count,
+        fallback_used=bool(fallback_used),
+        degraded=bool(degraded),
+        token_usage=sanitize_trace_dict(token_usage or {}) if token_usage else None,
+        cost_estimate=sanitize_trace_dict(cost_estimate or {}) if cost_estimate else None,
+        quality=sanitize_trace_dict(quality or {}) if quality else None,
     )
     span_ctx = TraceSpanContext(span)
     try:
@@ -55,6 +69,7 @@ async def trace_span(
     except Exception as exc:
         span.status = SpanStatus.ERROR
         span.error = str(exc)[:500]
+        span.error_type = exc.__class__.__name__
         raise
     finally:
         span.end_time = datetime.now(timezone.utc)

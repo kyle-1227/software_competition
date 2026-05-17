@@ -134,6 +134,9 @@ def _walk_spans(span: Any):
 
 
 def _duration_ms(span: Any) -> float | None:
+    attr_value = _float_or_none(getattr(span, "duration_ms", None))
+    if attr_value is not None:
+        return attr_value
     metadata = _mapping(getattr(span, "metadata", None))
     value = _float_or_none(metadata.get("duration_ms"))
     if value is not None:

@@ -81,6 +81,14 @@ def sanitize_trace_for_export(trace: Any) -> dict[str, Any]:
     return _strict_export_value(sanitized, "")
 
 
+def sanitize_span_for_export(span: Any) -> dict[str, Any]:
+    if span is None:
+        return {}
+    data = span.model_dump(mode="json") if hasattr(span, "model_dump") else span
+    sanitized = sanitize_trace_dict(data if isinstance(data, dict) else {})
+    return _strict_export_value(sanitized, "")
+
+
 def _default_trace_file(trace_store: Any | None) -> Path:
     storage = getattr(trace_store, "storage_path", None) or getattr(
         trace_store, "_storage_path", None

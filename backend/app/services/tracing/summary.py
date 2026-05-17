@@ -168,6 +168,9 @@ def _walk_spans(span: Any):
 
 
 def _trace_duration_ms(trace: Any, spans: list[Any]) -> float | None:
+    trace_duration = _float_or_none(getattr(trace, "total_duration_ms", None))
+    if trace_duration is not None:
+        return trace_duration
     root = getattr(trace, "root_span", None)
     root_duration = _duration_ms(root)
     if root_duration is not None:
@@ -248,6 +251,9 @@ def _is_error(span: Any) -> bool:
 def _duration_ms(span: Any) -> float | None:
     if span is None:
         return None
+    attr_value = _float_or_none(getattr(span, "duration_ms", None))
+    if attr_value is not None:
+        return attr_value
     metadata = _mapping(getattr(span, "metadata", None))
     value = _float_or_none(metadata.get("duration_ms"))
     if value is not None:

@@ -142,7 +142,32 @@ def _build_shared_nodes(services) -> dict[str, Any]:
             "device_name": state.get("device_name"),
             "device_model": state.get("device_model"),
             "session_id": session_id,
-            "trace_id": state.get("trace_id") or services.trace_store.start_trace(),
+            "trace_id": state.get("trace_id")
+            or services.trace_store.start_trace(
+                session_id=session_id,
+                question=state["question"],
+                metadata={
+                    "device_name": state.get("device_name"),
+                    "device_model": state.get("device_model"),
+                    "feature_flags": {
+                        "agent_loop_enabled": getattr(
+                            settings, "agent_loop_enabled", True
+                        ),
+                        "use_input_guardrail": getattr(
+                            settings, "use_input_guardrail", True
+                        ),
+                        "use_output_guardrail": getattr(
+                            settings, "use_output_guardrail", True
+                        ),
+                        "use_real_ai_coding": getattr(
+                            settings, "use_real_ai_coding", True
+                        ),
+                    },
+                    "llm_model": getattr(settings, "deepseek_model", None),
+                    "embedding_model": getattr(settings, "embedding_model", None),
+                    "reranker_model": getattr(settings, "reranker_model", None),
+                },
+            ),
             "errors": [],
             "warnings": [],
             "tool_calls": [],
@@ -279,7 +304,7 @@ def _build_shared_nodes(services) -> dict[str, Any]:
                 None,
             )
             if trace_id and callable(close_trace):
-                close_trace(trace_id)
+                close_trace(trace_id, status="error" if state.get("errors") else None)
 
     return {
         "intake_node": intake_node,

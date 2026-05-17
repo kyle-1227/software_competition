@@ -1,7 +1,10 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -11,6 +14,10 @@ class Settings(BaseSettings):
     api_prefix: str = "/api"
     frontend_origins: str = "http://localhost:8001,http://127.0.0.1:8001"
     data_dir: str = "../data"
+    database_url: str | None = None
+    trace_database_url: str | None = None
+    trace_backend: Literal["jsonl", "postgres", "auto"] = "auto"
+    trace_capture_mode: Literal["minimal", "summary", "debug"] = "summary"
     deepseek_api_key: str | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-pro"
@@ -71,7 +78,7 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-large-zh-v1.5"
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(BACKEND_DIR / ".env", ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -95,8 +102,7 @@ class Settings(BaseSettings):
     @property
     def data_path(self) -> Path:
         # 相对路径基于 backend 项目根目录解析，而不是基于命令执行目录解析。
-        backend_dir = Path(__file__).resolve().parents[2]
-        return (backend_dir / self.data_dir).resolve()
+        return (BACKEND_DIR / self.data_dir).resolve()
 
 
 settings = Settings()

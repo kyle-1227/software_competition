@@ -65,6 +65,42 @@ def test_get_trace_raw_api_sanitized(tmp_path) -> None:
     assert "script_hash" in rendered
 
 
+def test_list_traces_api(tmp_path) -> None:
+    store, trace_id = _store_with_trace(tmp_path)
+
+    with _client_with_trace_store(store) as client:
+        response = client.get("/api/traces")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["success"] is True
+    assert body["data"][0]["trace_id"] == trace_id
+    assert body["data"][0]["span_count"] == 1
+
+
+def test_get_trace_spans_tree_and_analytics_api(tmp_path) -> None:
+    store, trace_id = _store_with_trace(
+        tmp_path,
+        span=_span(
+            "retriever.vector_search",
+            SpanKind.RETRIEVER,
+            outputs={"evidence_count": 0, "placeholder_used": True},
+        ),
+    )
+
+    with _client_with_trace_store(store) as client:
+        spans_response = client.get(f"/api/traces/{trace_id}/spans")
+        tree_response = client.get(f"/api/traces/{trace_id}/tree")
+        analytics_response = client.get(f"/api/traces/{trace_id}/analytics")
+
+    assert spans_response.status_code == 200
+    assert spans_response.json()["data"][0]["name"] == "retriever.vector_search"
+    assert tree_response.status_code == 200
+    assert tree_response.json()["data"]["trace_id"] == trace_id
+    assert analytics_response.status_code == 200
+    assert analytics_response.json()["data"]["failure_type"] == "retrieval_failure"
+
+
 def test_get_trace_not_found_api(tmp_path) -> None:
     store = TraceStore(storage_path=tmp_path)
 
@@ -123,6 +159,7 @@ def _span(
         kind=kind,
         start_time=started,
         end_time=started + timedelta(milliseconds=10),
+        duration_ms=10,
         inputs=inputs or {},
         outputs=outputs or {},
         metadata=metadata or {"duration_ms": 10},

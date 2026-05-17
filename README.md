@@ -153,6 +153,16 @@ Safety boundary: these outputs do not include full prompts, answers, scripts, la
 
 Closed traces can be exported by id for local debugging, eval failure review, frontend trace display, and competition demos.
 
+Production trace persistence supports PostgreSQL with JSONL fallback:
+
+```text
+TRACE_BACKEND=auto        # auto | postgres | jsonl
+TRACE_DATABASE_URL=postgresql://app:***@localhost:5432/software_competition
+TRACE_CAPTURE_MODE=summary
+```
+
+Use `TRACE_BACKEND=postgres` to fail fast when PostgreSQL is unavailable. Leave it as `auto` for local JSONL fallback when no database URL is configured.
+
 CLI:
 
 ```bash
@@ -167,6 +177,10 @@ API:
 GET /api/traces/{trace_id}
 GET /api/traces/{trace_id}/summary
 GET /api/traces/{trace_id}/timeline
+GET /api/traces
+GET /api/traces/{trace_id}/spans
+GET /api/traces/{trace_id}/tree
+GET /api/traces/{trace_id}/analytics
 ```
 
 The raw export is sanitized before output and follows the same safety boundary as the summary and timeline.
