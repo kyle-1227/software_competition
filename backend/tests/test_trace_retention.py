@@ -12,6 +12,7 @@ from app.services.tracing.retention import (
     REASON_EVAL_EXPORTED_OLD,
     REASON_SUCCESS_OLD,
     TraceCleanupStats,
+    TraceExportStats,
     TraceRetentionPolicy,
     cleanup_candidate_for_trace,
     load_eval_exported_trace_ids,
@@ -165,6 +166,14 @@ def test_cleanup_stats_to_dict_includes_archive_and_backup_paths() -> None:
 
     assert payload["archive_path"] == "a.jsonl"
     assert payload["backup_path"] == "b.bak"
+
+
+def test_export_stats_includes_output_path_and_fatal() -> None:
+    stats = TraceExportStats(output_path="out.jsonl", fatal=True)
+    payload = stats.to_dict()
+
+    assert payload["output_path"] == "out.jsonl"
+    assert payload["fatal"] is True
 
 
 def _trace(

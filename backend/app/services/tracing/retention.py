@@ -78,6 +78,8 @@ class TraceExportStats:
     skipped: int = 0
     failed: int = 0
     dry_run: bool = True
+    output_path: str | None = None
+    fatal: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
