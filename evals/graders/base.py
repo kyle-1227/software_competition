@@ -145,16 +145,21 @@ def make_report(
     dataset_path: str,
     results: list[EvalCaseResult],
     skipped: int = 0,
+    empty_dataset_passes: bool = True,
 ) -> EvalRunReport:
     passed = sum(1 for result in results if result.passed)
     failed = sum(1 for result in results if not result.passed)
     total = len(results) + skipped
-    average_score = (
-        round(sum(result.score for result in results) / len(results), 4)
-        if results
-        else 0.0
-    )
-    pass_rate = round(passed / len(results), 4) if results else 0.0
+    if not results and skipped == 0:
+        average_score = 1.0 if empty_dataset_passes else 0.0
+        pass_rate = 1.0 if empty_dataset_passes else 0.0
+    else:
+        average_score = (
+            round(sum(result.score for result in results) / len(results), 4)
+            if results
+            else 0.0
+        )
+        pass_rate = round(passed / len(results), 4) if results else 0.0
     return EvalRunReport(
         run_id=uuid4().hex,
         dataset_path=dataset_path,

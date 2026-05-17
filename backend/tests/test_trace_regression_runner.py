@@ -98,6 +98,74 @@ def test_gitignore_has_generated_eval_artifact_policy() -> None:
     assert "evals/datasets/trace_regression_cases.jsonl" in gitignore
 
 
+def test_empty_dataset_non_strict_passes_by_default(tmp_path) -> None:
+    dataset = tmp_path / "empty.jsonl"
+    dataset.write_text("", encoding="utf-8")
+    report_path = tmp_path / "report.json"
+
+    code = main(["--dataset", str(dataset), "--report", str(report_path)])
+
+    assert code == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["pass_rate"] == 1.0
+    assert report["average_score"] == 1.0
+    assert report["total_cases"] == 0
+    assert report["passed"] == 0
+    assert report["failed"] == 0
+    assert report["skipped"] == 0
+
+
+def test_missing_dataset_non_strict_passes_by_default(tmp_path) -> None:
+    missing = tmp_path / "does_not_exist.jsonl"
+    report_path = tmp_path / "report.json"
+
+    code = main(["--dataset", str(missing), "--report", str(report_path)])
+
+    assert code == 0
+
+
+def test_empty_dataset_strict_fails(tmp_path) -> None:
+    dataset = tmp_path / "empty.jsonl"
+    dataset.write_text("", encoding="utf-8")
+    report_path = tmp_path / "report.json"
+
+    code = main(
+        ["--dataset", str(dataset), "--report", str(report_path), "--strict"]
+    )
+
+    assert code == 1
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["failed"] >= 1
+    reasons_flat = " ".join(
+        r for result in report["results"] for r in result["reasons"]
+    )
+    assert "empty dataset is not allowed in strict mode" in reasons_flat
+    synthetic = report["results"][0]
+    assert synthetic["case_id"] == "empty-dataset"
+    assert synthetic["failure_type"] == "empty_dataset"
+    assert synthetic["passed"] is False
+    assert synthetic["score"] == 0.0
+    assert synthetic["grader"] == "runner"
+
+
+def test_empty_dataset_json_stdout_is_parseable(tmp_path, capsys) -> None:
+    dataset = tmp_path / "empty.jsonl"
+    dataset.write_text("", encoding="utf-8")
+    report_path = tmp_path / "report.json"
+
+    code = main(
+        ["--dataset", str(dataset), "--report", str(report_path), "--json"]
+    )
+
+    captured = capsys.readouterr()
+    stdout = captured.out.strip()
+    assert stdout, "Expected non-empty JSON output on stdout"
+    data = json.loads(stdout)
+    assert code == 0
+    assert data["pass_rate"] == 1.0
+    assert data["schema_version"] == "trace_regression_report.v1"
+
+
 def _case(failure_type: str, *, case_id: str | None = None) -> dict:
     assertions = [{"type": "failure_type", "expected": failure_type}]
     case = {

@@ -1,7 +1,7 @@
 .venv/
 __pycache__/
 .pytest_cache/
-.pytest_tmp/
+# .pytest_tmp*/
 *.pyc
 *.pyo
 *.pyd
@@ -28,5 +28,5 @@ evals/reports/*.json
 evals/reports/*.jsonl
 evals/reports/*.md
 evals/datasets/trace_regression_cases.jsonl
-.gitkeep
+
 

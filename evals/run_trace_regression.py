@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from evals.graders.base import EvalRunReport, make_report  # noqa: E402
+from evals.graders.base import EvalCaseResult, EvalRunReport, make_report  # noqa: E402
 from evals.graders.registry import get_grader, is_known_failure_type  # noqa: E402
 
 DEFAULT_DATASET = ROOT / "evals" / "datasets" / "trace_regression_cases.jsonl"
@@ -46,7 +46,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(summary, ensure_ascii=False))
     else:
         print(_summary_text(summary))
-    return 1 if report.pass_rate < args.fail_under else 0
+    exit_failed = report.failed > 0 and args.strict
+    threshold_failed = report.pass_rate < args.fail_under
+    return 1 if exit_failed or threshold_failed else 0
 
 
 def run_trace_regression(
@@ -97,6 +99,29 @@ def run_trace_regression(
             results[-1].score = 0.0
             results[-1].reasons.append("skipped case is not allowed in strict mode")
         skipped = 0
+    if not results:
+        if strict:
+            results.append(
+                EvalCaseResult(
+                    case_id="empty-dataset",
+                    trace_id="",
+                    failure_type="empty_dataset",
+                    passed=False,
+                    score=0.0,
+                    grader="runner",
+                    reasons=["empty dataset is not allowed in strict mode"],
+                    assertions_checked=[
+                        {"type": "dataset_not_empty", "expected": True, "passed": False}
+                    ],
+                )
+            )
+        else:
+            return make_report(
+                dataset_path=str(dataset),
+                results=results,
+                skipped=skipped,
+                empty_dataset_passes=True,
+            )
     return make_report(dataset_path=str(dataset), results=results, skipped=skipped)
 
 
