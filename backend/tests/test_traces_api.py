@@ -10,6 +10,7 @@ from app.dependencies import get_trace_store
 from app.main import app
 from app.schemas.trace import SpanKind, TraceSpan
 from app.services.trace_store import TraceStore
+from app.services.tracing.eval_dataset import TraceEvalDatasetWriter
 
 
 def test_get_trace_summary_api(tmp_path) -> None:
@@ -123,6 +124,71 @@ def test_get_trace_spans_tree_and_analytics_api(tmp_path) -> None:
     assert analytics_response.json()["data"]["failure_type"] == "retrieval_failure"
 
 
+def test_export_trace_eval_case_api_writes_deduped_case(tmp_path, monkeypatch) -> None:
+    dataset = tmp_path / "trace_regression_cases.jsonl"
+    _patch_dataset_writer(monkeypatch, dataset)
+    store, trace_id = _store_with_trace(
+        tmp_path,
+        span=_span(
+            "tool.manual_lookup.attempt",
+            SpanKind.TOOL,
+            outputs={"answer": "FULL ANSWER SHOULD NOT LEAK " * 20},
+            metadata={"api_key": "real-api-key"},
+        ),
+    )
+    trace = store.get_trace_tree(trace_id)
+    assert trace is not None
+    trace.root_span.children[0].status = "error"
+
+    with _client_with_trace_store(store) as client:
+        first = client.post(f"/api/traces/{trace_id}/export-eval-case")
+        second = client.post(f"/api/traces/{trace_id}/export-eval-case")
+
+    first_body = first.json()
+    second_body = second.json()
+    assert first.status_code == 200
+    assert first_body["success"] is True
+    assert first_body["data"]["exported"] is True
+    assert first_body["data"]["deduplicated"] is False
+    assert set(first_body["data"]) == {
+        "exported",
+        "deduplicated",
+        "case_id",
+        "dataset_path",
+        "failure_type",
+        "reason",
+    }
+    assert second_body["data"]["exported"] is False
+    assert second_body["data"]["deduplicated"] is True
+    rendered = dataset.read_text(encoding="utf-8")
+    assert "FULL ANSWER SHOULD NOT LEAK" not in rendered
+    assert "real-api-key" not in rendered
+
+
+def test_export_trace_eval_case_api_returns_not_eligible_for_clean_success(tmp_path, monkeypatch) -> None:
+    dataset = tmp_path / "trace_regression_cases.jsonl"
+    _patch_dataset_writer(monkeypatch, dataset)
+    store, trace_id = _store_with_trace(
+        tmp_path,
+        span=_span(
+            "retriever.vector_search",
+            SpanKind.RETRIEVER,
+            metadata={"evidence_count": 2, "retrieved_pages": [1]},
+        ),
+    )
+
+    with _client_with_trace_store(store) as client:
+        response = client.post(f"/api/traces/{trace_id}/export-eval-case")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["data"]["exported"] is False
+    assert body["data"]["deduplicated"] is False
+    assert body["data"]["case_id"] is None
+    assert body["data"]["reason"] == "trace_not_eligible"
+    assert not dataset.exists()
+
+
 def test_get_trace_not_found_api(tmp_path) -> None:
     store = TraceStore(storage_path=tmp_path)
 
@@ -134,6 +200,16 @@ def test_get_trace_not_found_api(tmp_path) -> None:
     assert body["success"] is False
     assert body["data"] is None
     assert body["error"]["code"] == "NOT_FOUND"
+
+
+def test_export_trace_eval_case_not_found_api(tmp_path) -> None:
+    store = TraceStore(storage_path=tmp_path)
+
+    with _client_with_trace_store(store) as client:
+        response = client.post("/api/traces/missing/export-eval-case")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NOT_FOUND"
 
 
 def _client_with_trace_store(store: TraceStore):
@@ -186,3 +262,11 @@ def _span(
         outputs=outputs or {},
         metadata=metadata or {"duration_ms": 10},
     )
+
+
+def _patch_dataset_writer(monkeypatch, dataset):
+    class _Writer(TraceEvalDatasetWriter):
+        def __init__(self, path=None):
+            super().__init__(dataset)
+
+    monkeypatch.setattr("app.api.routes.traces.TraceEvalDatasetWriter", _Writer)

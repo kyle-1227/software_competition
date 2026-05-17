@@ -8,6 +8,11 @@ from app.dependencies import get_trace_store
 from app.schemas.response import ApiResponse, success_response
 from app.services.trace_store import TraceStore
 from app.services.tracing.analytics import build_trace_analytics
+from app.services.tracing.eval_adapter import (
+    should_export_trace_to_eval,
+    trace_to_eval_case,
+)
+from app.services.tracing.eval_dataset import TraceEvalDatasetWriter
 from app.services.tracing.reader import (
     find_trace_by_id,
     sanitize_span_for_export,
@@ -121,6 +126,45 @@ async def get_trace_analytics(
     trace = _get_trace_or_404(trace_store, trace_id)
     return success_response(
         data=build_trace_analytics(trace),
+        trace_id=request.state.trace_id,
+    )
+
+
+@router.post("/{trace_id}/export-eval-case", response_model=ApiResponse[dict[str, Any]])
+async def export_trace_eval_case(
+    request: Request,
+    trace_id: str,
+    trace_store: TraceStore = Depends(get_trace_store),
+) -> ApiResponse[dict[str, Any]]:
+    trace = _get_trace_or_404(trace_store, trace_id)
+    analytics = build_trace_analytics(trace)
+    failure_type = str(analytics.get("failure_type") or "unknown_failure")
+    dataset_path = TraceEvalDatasetWriter().path
+    if not should_export_trace_to_eval(trace, analytics):
+        return success_response(
+            data={
+                "exported": False,
+                "deduplicated": False,
+                "case_id": None,
+                "dataset_path": str(dataset_path),
+                "failure_type": failure_type,
+                "reason": "trace_not_eligible",
+            },
+            trace_id=request.state.trace_id,
+        )
+
+    case = trace_to_eval_case(trace, source="api_export", analytics=analytics)
+    writer = TraceEvalDatasetWriter(dataset_path)
+    appended = writer.append_case(case)
+    return success_response(
+        data={
+            "exported": appended,
+            "deduplicated": not appended,
+            "case_id": case["case_id"],
+            "dataset_path": str(dataset_path),
+            "failure_type": case["failure_type"],
+            "reason": "exported" if appended else "duplicate_case_id",
+        },
         trace_id=request.state.trace_id,
     )
 
