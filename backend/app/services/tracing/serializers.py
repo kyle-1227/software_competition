@@ -111,20 +111,20 @@ def _sanitize_list(items: list[Any], mode: str) -> list[Any]:
 
 
 def _truncate_string(value: str, limit: int = MAX_STRING_LENGTH) -> str:
-    value = _redact_text(value)
+    value = redact_trace_text(value)
     if len(value) <= limit:
         return value
     return value[:limit] + "...[truncated]"
 
 
 def _preview(value: str, limit: int = MAX_PREVIEW_LENGTH) -> str:
-    value = _redact_text(value)
+    value = redact_trace_text(value)
     return value[:limit] + ("..." if len(value) > limit else "")
 
 
 def _summarize_text(value: Any, key: str, mode: str) -> dict[str, Any]:
     text = str(value or "")
-    redacted = _redact_text(text)
+    redacted = redact_trace_text(text)
     summary = {
         f"{key}_hash": sha256(text.encode("utf-8")).hexdigest(),
         f"{key}_length": len(text),
@@ -157,7 +157,7 @@ def _summarize_script(value: Any, key: str, mode: str) -> dict[str, Any]:
         text = str(value)
     else:
         text = str(value or "")
-    redacted = _redact_text(text)
+    redacted = redact_trace_text(text)
     summary = {
         f"{key}_hash": sha256(text.encode("utf-8")).hexdigest(),
         f"{key}_length": len(text),
@@ -217,18 +217,18 @@ def _string_limit_for_mode(mode: str) -> int:
     return MAX_STRING_LENGTH
 
 
-def _redact_text(text: str) -> str:
+def redact_trace_text(text: str) -> str:
     redacted = text
-    for pattern in (
-        r"(?i)(api[_-]?key\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(access[_-]?token\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(refresh[_-]?token\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(bearer[_-]?token\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(auth[_-]?token\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(authorization\s*[:=]\s*)(bearer\s+)?[^\s,;]+",
-        r"(?i)(password\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(secret\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(token\s*[:=]\s*)[^\s,;]+",
+    for pattern, replacement in (
+        (r"(?i)(api[_-]?key\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]"),
+        (r"(?i)(access[_-]?token\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]"),
+        (r"(?i)(refresh[_-]?token\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]"),
+        (r"(?i)(bearer[_-]?token\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]"),
+        (r"(?i)(auth[_-]?token\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]"),
+        (r"(?i)(authorization\s*[:=]\s*)(bearer\s+)?[^\s,;]+", r"\1\2[REDACTED]"),
+        (r"(?i)(password\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]"),
+        (r"(?i)(secret\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]"),
+        (r"(?i)(token\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]"),
     ):
-        redacted = re.sub(pattern, r"\1[REDACTED]", redacted)
+        redacted = re.sub(pattern, replacement, redacted)
     return redacted

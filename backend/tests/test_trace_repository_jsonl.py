@@ -114,6 +114,61 @@ def test_jsonl_repository_reads_legacy_trace(tmp_path) -> None:
     assert loaded.status == TraceStatus.SUCCESS
 
 
+def test_jsonl_content_redacts_script_preview_sensitive_values(tmp_path) -> None:
+    repository = JsonlTraceRepository(tmp_path)
+    repository.initialize()
+
+    script_with_sensitive = (
+        "curl -H 'Authorization: Bearer abc-123' \\\n"
+        "-H 'api_key=secret-key-here' \\\n"
+        "https://api.example.com\n"
+    )
+    trace = _trace(
+        question="check the api",
+        span_inputs={
+            "script": script_with_sensitive,
+            "code": "token=code-token-value",
+            "command": "cmd --password=cmd-pass-value --secret=cmd-secret-value",
+        },
+        span_outputs={"answer": "done"},
+    )
+
+    repository.close_trace(trace)
+
+    content = (tmp_path / "traces.jsonl").read_text(encoding="utf-8")
+    payload = json.loads(content)
+
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert "abc-123" not in rendered
+    assert "secret-key-here" not in rendered
+    assert "code-token-value" not in rendered
+    assert "cmd-pass-value" not in rendered
+    assert "cmd-secret-value" not in rendered
+    assert "[REDACTED]" in rendered
+
+
+def test_jsonl_content_redacts_auth_token_password_secret_in_question(tmp_path) -> None:
+    repository = JsonlTraceRepository(tmp_path)
+    repository.initialize()
+
+    trace = _trace(
+        question="authorization=Bearer live-token password=live-pass secret=live-secret help?",
+        span_inputs={"prompt": "token=my-token-value"},
+    )
+
+    repository.close_trace(trace)
+
+    content = (tmp_path / "traces.jsonl").read_text(encoding="utf-8")
+    rendered = content
+
+    assert "live-token" not in rendered
+    assert "live-pass" not in rendered
+    assert "live-secret" not in rendered
+    assert "my-token-value" not in rendered
+    assert "[REDACTED]" in rendered
+
+
 def _trace(
     *,
     question: str = "q",

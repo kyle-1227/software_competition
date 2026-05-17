@@ -106,6 +106,98 @@ def test_sanitize_trace_for_persistence_recursively_redacts_large_content() -> N
     assert sanitized["root_span"]["children"][0]["outputs"]["evidence"]["evidence_count"] == 1
 
 
+def test_script_preview_fields_do_not_leak_sensitive_values() -> None:
+    full_script = (
+        "curl -H 'api_key=real-api-key' \\\n"
+        "-H 'Authorization: Bearer secret-token' \\\n"
+        "https://api.example.com\n"
+    )
+    span = TraceSpan(
+        name="tool.ai_coding.attempt",
+        kind=SpanKind.TOOL,
+        inputs={
+            "script": full_script,
+            "code": "code with token=my-secret-token here",
+            "command": "run --password=super-secret-password",
+        },
+    )
+
+    summary = sanitize_span_for_persistence(span, "summary")
+    inputs = summary["inputs"]
+
+    script_preview = inputs["script"]["script_preview"]
+    code_preview = inputs["code"]["code_preview"]
+    command_preview = inputs["command"]["command_preview"]
+
+    assert "real-api-key" not in script_preview
+    assert "secret-token" not in script_preview
+    assert "my-secret-token" not in code_preview
+    assert "super-secret-password" not in command_preview
+    assert "[REDACTED]" in script_preview
+
+
+def test_authorization_and_token_patterns_redacted_in_text() -> None:
+    span = TraceSpan(
+        name="tool.ai_coding.attempt",
+        kind=SpanKind.TOOL,
+        inputs={
+            "script": "auth_header = 'Authorization: Bearer abc-123'\ntoken = 'token=xyz-789'",
+        },
+    )
+
+    summary = sanitize_span_for_persistence(span, "summary")
+    rendered = json.dumps(summary, ensure_ascii=False)
+
+    assert "abc-123" not in rendered
+    assert "xyz-789" not in rendered
+    assert "[REDACTED]" in rendered
+
+
+def test_debug_mode_does_not_leak_sensitive_values() -> None:
+    full_script = "api_key=real-api-key\npassword=real-password\n" * 30
+    span = TraceSpan(
+        name="tool.ai_coding.attempt",
+        kind=SpanKind.TOOL,
+        inputs={
+            "script": full_script,
+            "code": full_script,
+            "command": full_script,
+        },
+    )
+
+    debug = sanitize_span_for_persistence(span, "debug")
+    rendered = json.dumps(debug, ensure_ascii=False)
+    inputs = debug["inputs"]
+
+    script_preview = inputs["script"]["script_preview"]
+
+    assert len(script_preview) <= 503
+    assert "real-api-key" not in rendered
+    assert "real-password" not in rendered
+    assert full_script not in rendered
+
+
+def test_minimal_mode_no_preview_for_scripts() -> None:
+    span = TraceSpan(
+        name="tool.ai_coding.attempt",
+        kind=SpanKind.TOOL,
+        inputs={
+            "script": "print('hello')",
+            "code": "1+1",
+            "command": "ls",
+        },
+    )
+
+    minimal = sanitize_span_for_persistence(span, "minimal")
+    inputs = minimal["inputs"]
+
+    assert "script_preview" not in inputs.get("script", {})
+    assert "code_preview" not in inputs.get("code", {})
+    assert "command_preview" not in inputs.get("command", {})
+    assert "script_hash" in inputs["script"]
+    assert "script_length" in inputs["script"]
+
+
 def _trace(
     *,
     root_inputs: dict | None = None,

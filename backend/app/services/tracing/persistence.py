@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from hashlib import sha256
-import re
 from typing import Any
 
 from app.schemas.trace import Trace, TraceSpan
 from app.services.tracing.serializers import (
+    redact_trace_text,
     resolve_capture_mode,
     sanitize_trace_dict,
 )
@@ -23,7 +23,7 @@ def question_persistence_fields(
     text = str(question or "")
     preview = None
     if mode != "minimal":
-        preview = _preview(_redact_text(text), _preview_limit(mode))
+        preview = _preview(redact_trace_text(text), _preview_limit(mode))
     return {
         "question_hash": sha256(text.encode("utf-8")).hexdigest() if text else None,
         "question_preview": preview,
@@ -110,7 +110,7 @@ def _safe_preview_or_none(value: Any, mode: str) -> str | None:
         return None
     if mode == "minimal":
         return None
-    return _preview(_redact_text(str(value)), _preview_limit(mode))
+    return _preview(redact_trace_text(str(value)), _preview_limit(mode))
 
 
 def _preview(text: str, limit: int) -> str:
@@ -135,20 +135,3 @@ def _enum_value(value: Any) -> str | None:
     if value is None:
         return None
     return str(getattr(value, "value", value))
-
-
-def _redact_text(text: str) -> str:
-    redacted = text
-    for pattern in (
-        r"(?i)(api[_-]?key\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(access[_-]?token\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(refresh[_-]?token\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(bearer[_-]?token\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(auth[_-]?token\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(authorization\s*[:=]\s*)(bearer\s+)?[^\s,;]+",
-        r"(?i)(password\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(secret\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(token\s*[:=]\s*)[^\s,;]+",
-    ):
-        redacted = re.sub(pattern, r"\1[REDACTED]", redacted)
-    return redacted
