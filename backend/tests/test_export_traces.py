@@ -147,12 +147,31 @@ def test_load_jsonl_with_stats_missing_file(tmp_path) -> None:
     assert failed == 0
 
 
-def test_export_traces_missing_jsonl_path_succeeds(tmp_path) -> None:
+def test_export_traces_missing_jsonl_path_succeeds_with_zero_candidates(tmp_path) -> None:
     output = tmp_path / "export.jsonl"
-    empty_file = tmp_path / "empty.jsonl"
-    empty_file.write_text("", encoding="utf-8")
+    missing = tmp_path / "missing.jsonl"
 
-    code = main(["--backend", "jsonl", "--jsonl-path", str(empty_file), "--output", str(output)])
+    code = main(["--backend", "jsonl", "--jsonl-path", str(missing), "--output", str(output)])
+
+    assert code == 0
+    assert not output.exists()
+
+
+def test_export_traces_limit_zero_exports_zero(tmp_path) -> None:
+    repository = _FakeRepository(
+        [_trace(f"trace-{i}", closed_at=datetime(2026, 1, i + 1, tzinfo=timezone.utc)) for i in range(2)]
+    )
+
+    stats = export_traces(repository, output=tmp_path / "export.jsonl", limit=0, apply=False)
+
+    assert stats.candidates == 0
+    assert stats.would_export == 0
+
+
+def test_export_traces_jsonl_backend_uses_default_path_when_omitted(tmp_path) -> None:
+    output = tmp_path / "export.jsonl"
+
+    code = main(["--backend", "jsonl", "--output", str(output)])
 
     assert code == 0
 

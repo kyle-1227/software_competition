@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_JSONL_PATH = BACKEND_ROOT / "data" / "traces" / "traces.jsonl"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
@@ -42,20 +43,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if is_forbidden_export_path(args.output):
         _warn(sys.stderr, "trace_export_forbidden_output", ValueError(str(args.output)))
-        print(json.dumps(TraceExportStats(fatal=True).to_dict(), ensure_ascii=False))
+        print(json.dumps(TraceExportStats(fatal=True, output_path=str(args.output)).to_dict(), ensure_ascii=False))
         return 1
 
     if args.backend == "postgres" and not args.database_url:
         _warn(sys.stderr, "trace_export_missing_db_url", ValueError("database_url required for postgres backend"))
-        print(json.dumps(TraceExportStats(fatal=True).to_dict(), ensure_ascii=False))
+        print(json.dumps(TraceExportStats(fatal=True, output_path=str(args.output)).to_dict(), ensure_ascii=False))
         return 1
 
-    repository = _build_repository(args.backend, database_url=args.database_url, jsonl_path=args.jsonl_path)
+    if args.backend == "jsonl":
+        repository = None
+        jsonl_path = args.jsonl_path or DEFAULT_JSONL_PATH
+    else:
+        repository = _build_repository(args.backend, database_url=args.database_url, jsonl_path=args.jsonl_path)
+        jsonl_path = args.jsonl_path
     stats = export_traces(
         repository,
         output=args.output,
         backend=args.backend,
-        jsonl_path=args.jsonl_path,
+        jsonl_path=jsonl_path,
         session_id=args.session_id,
         status=args.status,
         before=_parse_datetime(args.before),
@@ -104,9 +110,9 @@ def export_traces(
         if not _within_window(trace, before=before, after=after):
             stats.skipped += 1
             continue
-        selected.append(_without_spans(trace) if not include_spans else trace)
         if limit is not None and len(selected) >= max(0, int(limit)):
             break
+        selected.append(_without_spans(trace) if not include_spans else trace)
     stats.candidates = len(selected)
     stats.would_export = len(selected)
     if not apply:
