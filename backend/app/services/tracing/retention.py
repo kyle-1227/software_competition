@@ -25,6 +25,19 @@ class TraceRetentionPolicy:
     batch_size: int = 500
     archive_before_delete: bool = True
 
+    def __post_init__(self) -> None:
+        for name in (
+            "keep_days",
+            "keep_error_days",
+            "keep_degraded_days",
+            "keep_eval_exported_days",
+            "max_delete",
+        ):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be >= 0, got {getattr(self, name)}")
+        if self.batch_size <= 0:
+            raise ValueError(f"batch_size must be > 0, got {self.batch_size}")
+
 
 @dataclass
 class TraceCleanupCandidate:
@@ -50,6 +63,8 @@ class TraceCleanupStats:
     skipped: int = 0
     failed: int = 0
     dry_run: bool = True
+    archive_path: str | None = None
+    backup_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
