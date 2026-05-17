@@ -91,6 +91,12 @@ def test_get_trace_health_api(tmp_path) -> None:
     assert body["success"] is True
     assert body["data"]["backend"] == "jsonl"
     assert body["data"]["database_url_configured"] is False
+    assert body["data"]["healthy"] is True
+    assert body["data"]["degraded"] is False
+    assert body["data"]["ever_degraded"] is False
+    assert "last_error" in body["data"]
+    assert "last_error_at" in body["data"]
+    assert body["data"]["last_success_at"] is not None
     assert "postgresql://" not in json.dumps(body, ensure_ascii=False)
 
 

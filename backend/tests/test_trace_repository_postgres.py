@@ -50,6 +50,9 @@ def test_postgres_repository_save_get_list_and_health() -> None:
     assert summaries[0]["question_preview"] == trace.question
     assert health.backend == "postgres"
     assert health.healthy is True
+    assert health.degraded is False
+    assert health.ever_degraded is False
+    assert health.last_success_at is not None
 
 
 def test_postgres_repository_minimal_question_preview_is_null(monkeypatch) -> None:

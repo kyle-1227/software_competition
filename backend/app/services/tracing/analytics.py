@@ -104,8 +104,8 @@ def classify_failure(trace: Any) -> dict[str, Any]:
         (
             FailureType.TRACE_REPOSITORY_FAILURE,
             _is_trace_repository_failure,
-            "Trace repository degraded or failed.",
-            "Check trace repository health, database connectivity, and migration state.",
+            "Trace repository write or read failed.",
+            "Check trace backend health, PostgreSQL connectivity, JSONL permissions, and migration state.",
         ),
         (
             FailureType.FALLBACK_DEGRADED,

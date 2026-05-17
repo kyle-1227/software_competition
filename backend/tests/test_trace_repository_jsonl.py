@@ -33,6 +33,9 @@ def test_jsonl_repository_save_get_list_and_health(tmp_path) -> None:
     assert spans[0].name == "node.orchestrator"
     assert health.backend == "jsonl"
     assert health.healthy is True
+    assert health.degraded is False
+    assert health.ever_degraded is False
+    assert health.last_success_at is not None
 
 
 def test_jsonl_repository_persists_sanitized_trace(tmp_path) -> None:
@@ -71,6 +74,27 @@ def test_jsonl_repository_persists_sanitized_trace(tmp_path) -> None:
     assert full_answer not in content
     assert "script_hash" in content
     assert "answer_length" in content
+
+
+def test_jsonl_repository_health_recovers_after_storage_error(tmp_path) -> None:
+    blocking_file = tmp_path / "not-a-directory"
+    blocking_file.write_text("blocked", encoding="utf-8")
+    repository = JsonlTraceRepository(blocking_file)
+
+    failed = repository.health_status()
+
+    assert failed.healthy is False
+    assert failed.degraded is True
+    assert failed.ever_degraded is True
+    assert failed.last_error_at is not None
+
+    repository.storage_path = tmp_path / "recovered"
+    recovered = repository.health_status()
+
+    assert recovered.healthy is True
+    assert recovered.degraded is False
+    assert recovered.ever_degraded is True
+    assert recovered.last_success_at is not None
 
 
 def test_jsonl_repository_minimal_mode_drops_text_previews(tmp_path, monkeypatch) -> None:

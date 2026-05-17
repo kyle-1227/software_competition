@@ -64,6 +64,39 @@ def test_trace_analytics_prefers_retrieval_failure_over_fallback_degraded() -> N
     assert classify_failure(trace)["failure_type"] == "retrieval_failure"
 
 
+def test_trace_analytics_classifies_trace_repository_failure() -> None:
+    trace = _trace(
+        _span(
+            "trace.repository.save_span",
+            SpanKind.NODE,
+            status=SpanStatus.ERROR,
+            metadata={
+                "trace_repository_failure": True,
+                "degraded": True,
+                "synthetic": True,
+            },
+        )
+    )
+
+    result = classify_failure(trace)
+
+    assert result["failure_type"] == "trace_repository_failure"
+    assert result["root_cause_span"]["name"] == "trace.repository.save_span"
+
+
+def test_trace_analytics_prefers_repository_failure_over_fallback_degraded() -> None:
+    trace = _trace(
+        _span(
+            "trace.repository.close_trace",
+            SpanKind.NODE,
+            status=SpanStatus.ERROR,
+            metadata={"trace_repository_failure": True, "fallback_used": True},
+        )
+    )
+
+    assert classify_failure(trace)["failure_type"] == "trace_repository_failure"
+
+
 def test_trace_analytics_classifies_policy_approval_required() -> None:
     trace = _trace(_span("node.approval", SpanKind.NODE))
 

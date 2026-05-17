@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
@@ -27,13 +27,28 @@ class RepositoryHealth:
     configured_backend: str
     healthy: bool
     degraded: bool = False
+    ever_degraded: bool = False
     last_error: str | None = None
+    last_error_at: datetime | None = None
+    last_success_at: datetime | None = None
     storage_path: str | None = None
     database_url_configured: bool = False
     capture_mode: str = "summary"
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "backend": self.backend,
+            "configured_backend": self.configured_backend,
+            "healthy": self.healthy,
+            "degraded": self.degraded,
+            "ever_degraded": self.ever_degraded,
+            "last_error": self.last_error,
+            "last_error_at": _datetime_to_json(self.last_error_at),
+            "last_success_at": _datetime_to_json(self.last_success_at),
+            "storage_path": self.storage_path,
+            "database_url_configured": self.database_url_configured,
+            "capture_mode": self.capture_mode,
+        }
 
 
 class TraceRepository(Protocol):
@@ -79,29 +94,41 @@ class JsonlTraceRepository:
     ) -> None:
         self.storage_path = _resolve_storage_path(storage_path)
         self.configured_backend = configured_backend
+        self._fallback_degraded = degraded
+        self._fallback_error = last_error
         self.degraded = degraded
+        self.ever_degraded = degraded or bool(last_error)
         self.last_error = last_error
+        self.last_error_at = datetime.now(timezone.utc) if last_error else None
+        self.last_success_at: datetime | None = None
 
     def initialize(self) -> None:
         try:
             self.storage_path.mkdir(parents=True, exist_ok=True)
+            self._record_success()
         except OSError as exc:
-            self.last_error = str(exc)[:500]
-            self.degraded = True
+            self._record_error(exc)
             logger.warning("JSONL trace storage unavailable: %s", exc)
 
     def save_trace(self, trace: Trace) -> None:
         del trace
+        self._record_success()
 
     def save_span(self, trace_id: str, span: TraceSpan) -> None:
         del trace_id, span
+        self._record_success()
 
     def close_trace(self, trace: Trace) -> None:
-        self.initialize()
-        filepath = self.storage_path / "traces.jsonl"
-        payload = sanitize_trace_for_persistence(trace)
-        with filepath.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, default=_json_default) + "\n")
+        try:
+            self.initialize()
+            filepath = self.storage_path / "traces.jsonl"
+            payload = sanitize_trace_for_persistence(trace)
+            with filepath.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False, default=_json_default) + "\n")
+            self._record_success()
+        except Exception as exc:
+            self._record_error(exc)
+            raise
 
     def get_trace(self, trace_id: str) -> Trace | None:
         filepath = self.storage_path / "traces.jsonl"
@@ -195,10 +222,12 @@ class JsonlTraceRepository:
     def healthcheck(self) -> bool:
         try:
             self.initialize()
-            return self.storage_path.exists()
+            healthy = self.storage_path.exists() and self.storage_path.is_dir()
+            if healthy:
+                self._record_success()
+            return healthy
         except OSError as exc:
-            self.last_error = str(exc)[:500]
-            self.degraded = True
+            self._record_error(exc)
             return False
 
     def health_status(self) -> RepositoryHealth:
@@ -208,11 +237,25 @@ class JsonlTraceRepository:
             configured_backend=self.configured_backend,
             healthy=healthy,
             degraded=self.degraded or not healthy,
+            ever_degraded=self.ever_degraded,
             last_error=self.last_error,
+            last_error_at=self.last_error_at,
+            last_success_at=self.last_success_at,
             storage_path=str(self.storage_path),
             database_url_configured=False,
             capture_mode=resolve_capture_mode(),
         )
+
+    def _record_success(self) -> None:
+        self.last_success_at = datetime.now(timezone.utc)
+        self.degraded = self._fallback_degraded
+        self.last_error = self._fallback_error if self._fallback_degraded else None
+
+    def _record_error(self, exc: Exception) -> None:
+        self.degraded = True
+        self.ever_degraded = True
+        self.last_error = str(exc)[:500]
+        self.last_error_at = datetime.now(timezone.utc)
 
 
 class PostgreSQLTraceRepository:
@@ -221,7 +264,11 @@ class PostgreSQLTraceRepository:
             raise ValueError("PostgreSQL trace repository requires a database URL")
         self.database_url = database_url
         self.configured_backend = configured_backend
+        self.degraded = False
+        self.ever_degraded = False
         self.last_error: str | None = None
+        self.last_error_at: datetime | None = None
+        self.last_success_at: datetime | None = None
 
     def initialize(self) -> None:
         self.migrate_schema()
@@ -233,20 +280,21 @@ class PostgreSQLTraceRepository:
                     for statement in _MIGRATION_SQL:
                         cur.execute(statement)
                 conn.commit()
-                self.last_error = None
+                self._record_success()
             except Exception as exc:
                 conn.rollback()
-                self.last_error = str(exc)[:500]
+                self._record_error(exc)
                 raise
 
     def save_trace(self, trace: Trace) -> None:
         from psycopg.types.json import Jsonb
 
-        persisted_trace = sanitize_trace_for_persistence(trace)
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
+        try:
+            persisted_trace = sanitize_trace_for_persistence(trace)
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
                     INSERT INTO agent_traces (
                         trace_id, run_id, session_id, user_id, question,
                         question_hash, question_preview, question_length,
@@ -291,20 +339,25 @@ class PostgreSQLTraceRepository:
                         closed_at = EXCLUDED.closed_at,
                         total_duration_ms = EXCLUDED.total_duration_ms
                     """,
-                    {
-                        **_trace_row(trace),
-                        "feature_flags_json": Jsonb(persisted_trace.get("feature_flags") or {}),
-                    },
-                )
+                        {
+                            **_trace_row(trace),
+                            "feature_flags_json": Jsonb(persisted_trace.get("feature_flags") or {}),
+                        },
+                    )
+            self._record_success()
+        except Exception as exc:
+            self._record_error(exc)
+            raise
 
     def save_span(self, trace_id: str, span: TraceSpan) -> None:
         from psycopg.types.json import Jsonb
 
-        persisted = sanitize_span_for_persistence(span)
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
+        try:
+            persisted = sanitize_span_for_persistence(span)
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
                     INSERT INTO agent_trace_spans (
                         span_id, trace_id, parent_span_id, name, kind, status,
                         start_time, end_time, duration_ms, inputs_json,
@@ -342,34 +395,43 @@ class PostgreSQLTraceRepository:
                         cost_estimate_json = EXCLUDED.cost_estimate_json,
                         quality_json = EXCLUDED.quality_json
                     """,
-                    {
-                        "span_id": span.span_id,
-                        "trace_id": trace_id,
-                        "parent_span_id": span.parent_span_id,
-                        "name": span.name,
-                        "kind": _enum_value(span.kind),
-                        "status": _normalize_span_status_value(span.status),
-                        "start_time": span.start_time,
-                        "end_time": span.end_time,
-                        "duration_ms": span.duration_ms,
-                        "inputs_json": Jsonb(persisted.get("inputs") or {}),
-                        "outputs_json": Jsonb(persisted.get("outputs") or {}),
-                        "metadata_json": Jsonb(persisted.get("metadata") or {}),
-                        "error": persisted.get("error"),
-                        "error_type": persisted.get("error_type"),
-                        "attempt": persisted.get("attempt"),
-                        "retry_count": persisted.get("retry_count"),
-                        "fallback_used": bool(persisted.get("fallback_used")),
-                        "degraded": bool(persisted.get("degraded")),
-                        "token_usage_json": Jsonb(persisted.get("token_usage")) if persisted.get("token_usage") else None,
-                        "cost_estimate_json": Jsonb(persisted.get("cost_estimate")) if persisted.get("cost_estimate") else None,
-                        "quality_json": Jsonb(persisted.get("quality")) if persisted.get("quality") else None,
-                        "created_at": datetime.now(timezone.utc),
-                    },
-                )
+                        {
+                            "span_id": span.span_id,
+                            "trace_id": trace_id,
+                            "parent_span_id": span.parent_span_id,
+                            "name": span.name,
+                            "kind": _enum_value(span.kind),
+                            "status": _normalize_span_status_value(span.status),
+                            "start_time": span.start_time,
+                            "end_time": span.end_time,
+                            "duration_ms": span.duration_ms,
+                            "inputs_json": Jsonb(persisted.get("inputs") or {}),
+                            "outputs_json": Jsonb(persisted.get("outputs") or {}),
+                            "metadata_json": Jsonb(persisted.get("metadata") or {}),
+                            "error": persisted.get("error"),
+                            "error_type": persisted.get("error_type"),
+                            "attempt": persisted.get("attempt"),
+                            "retry_count": persisted.get("retry_count"),
+                            "fallback_used": bool(persisted.get("fallback_used")),
+                            "degraded": bool(persisted.get("degraded")),
+                            "token_usage_json": Jsonb(persisted.get("token_usage")) if persisted.get("token_usage") else None,
+                            "cost_estimate_json": Jsonb(persisted.get("cost_estimate")) if persisted.get("cost_estimate") else None,
+                            "quality_json": Jsonb(persisted.get("quality")) if persisted.get("quality") else None,
+                            "created_at": datetime.now(timezone.utc),
+                        },
+                    )
+            self._record_success()
+        except Exception as exc:
+            self._record_error(exc)
+            raise
 
     def close_trace(self, trace: Trace) -> None:
-        self.save_trace(trace)
+        try:
+            self.save_trace(trace)
+            self._record_success()
+        except Exception as exc:
+            self._record_error(exc)
+            raise
 
     def get_trace(self, trace_id: str) -> Trace | None:
         trace_row = None
@@ -503,10 +565,10 @@ class PostgreSQLTraceRepository:
                     cur.execute("SELECT 1")
                     healthy = cur.fetchone() is not None
                     if healthy:
-                        self.last_error = None
+                        self._record_success()
                     return healthy
         except Exception as exc:
-            self.last_error = str(exc)[:500]
+            self._record_error(exc)
             return False
 
     def health_status(self) -> RepositoryHealth:
@@ -515,12 +577,26 @@ class PostgreSQLTraceRepository:
             backend="postgres",
             configured_backend=self.configured_backend,
             healthy=healthy,
-            degraded=not healthy,
+            degraded=self.degraded or not healthy,
+            ever_degraded=self.ever_degraded,
             last_error=self.last_error,
+            last_error_at=self.last_error_at,
+            last_success_at=self.last_success_at,
             storage_path=None,
             database_url_configured=bool(self.database_url),
             capture_mode=resolve_capture_mode(),
         )
+
+    def _record_success(self) -> None:
+        self.last_success_at = datetime.now(timezone.utc)
+        self.degraded = False
+        self.last_error = None
+
+    def _record_error(self, exc: Exception) -> None:
+        self.degraded = True
+        self.ever_degraded = True
+        self.last_error = str(exc)[:500]
+        self.last_error_at = datetime.now(timezone.utc)
 
     def _connect(self, *, autocommit: bool = True):
         try:
@@ -592,6 +668,10 @@ def _json_default(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value)
+
+
+def _datetime_to_json(value: datetime | None) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
 
 
 def _walk_spans(span: TraceSpan):
