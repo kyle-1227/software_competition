@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
+from app.core.config import settings
 from app.schemas.trace import SpanKind, Trace, TraceSpan, TraceStatus
 from app.services.tracing.repository import JsonlTraceRepository
 
@@ -33,7 +35,91 @@ def test_jsonl_repository_save_get_list_and_health(tmp_path) -> None:
     assert health.healthy is True
 
 
-def _trace() -> Trace:
+def test_jsonl_repository_persists_sanitized_trace(tmp_path) -> None:
+    repository = JsonlTraceRepository(tmp_path)
+    repository.initialize()
+    full_script = "api_key=real-api-key\nprint('SCRIPT_BODY_SHOULD_NOT_LEAK')\n" * 20
+    full_answer = "ANSWER_BODY_SHOULD_NOT_LEAK " * 20
+    trace = _trace(
+        question="token=secret-token password=real-password why fail?",
+        span_inputs={
+            "api_key": "real-api-key",
+            "authorization": "Bearer secret-token",
+            "password": "real-password",
+            "secret": "real-secret",
+            "reasoning": "private reasoning",
+            "chain_of_thought": "private chain",
+            "script": full_script,
+        },
+        span_outputs={"answer": full_answer},
+    )
+
+    repository.close_trace(trace)
+
+    content = (tmp_path / "traces.jsonl").read_text(encoding="utf-8")
+    loaded = repository.get_trace(trace.trace_id)
+
+    assert loaded is not None
+    assert loaded.trace_id == trace.trace_id
+    assert "real-api-key" not in content
+    assert "secret-token" not in content
+    assert "real-password" not in content
+    assert "real-secret" not in content
+    assert "private reasoning" not in content
+    assert "private chain" not in content
+    assert full_script not in content
+    assert full_answer not in content
+    assert "script_hash" in content
+    assert "answer_length" in content
+
+
+def test_jsonl_repository_minimal_mode_drops_text_previews(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "trace_capture_mode", "minimal")
+    repository = JsonlTraceRepository(tmp_path)
+    trace = _trace(
+        question="QUESTION SHOULD NOT BE PREVIEWED",
+        span_inputs={"script": "print('SCRIPT SHOULD NOT BE PREVIEWED')"},
+        span_outputs={"answer": "ANSWER SHOULD NOT BE PREVIEWED"},
+    )
+
+    repository.close_trace(trace)
+
+    content = (tmp_path / "traces.jsonl").read_text(encoding="utf-8")
+    payload = json.loads(content)
+
+    assert payload["question_preview"] is None
+    assert payload["question"] is None
+    assert "QUESTION SHOULD NOT BE PREVIEWED" not in content
+    assert "ANSWER SHOULD NOT BE PREVIEWED" not in content
+    assert "SCRIPT SHOULD NOT BE PREVIEWED" not in content
+    assert "answer_preview" not in content
+    assert "script_preview" not in content
+
+
+def test_jsonl_repository_reads_legacy_trace(tmp_path) -> None:
+    legacy = {
+        "trace_id": "legacy-jsonl-trace",
+        "session_id": "legacy-session",
+        "question": "legacy question",
+        "status": "ok",
+        "root_span": {"name": "harness", "kind": "agent"},
+    }
+    (tmp_path / "traces.jsonl").write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+    repository = JsonlTraceRepository(tmp_path)
+
+    loaded = repository.get_trace("legacy-jsonl-trace")
+
+    assert loaded is not None
+    assert loaded.question == "legacy question"
+    assert loaded.status == TraceStatus.SUCCESS
+
+
+def _trace(
+    *,
+    question: str = "q",
+    span_inputs: dict | None = None,
+    span_outputs: dict | None = None,
+) -> Trace:
     started = datetime(2026, 1, 1, tzinfo=timezone.utc)
     span = TraceSpan(
         name="node.orchestrator",
@@ -41,6 +127,8 @@ def _trace() -> Trace:
         start_time=started,
         end_time=started + timedelta(milliseconds=10),
         duration_ms=10,
+        inputs=span_inputs or {},
+        outputs=span_outputs or {},
     )
     root = TraceSpan(
         name="harness",
@@ -53,7 +141,7 @@ def _trace() -> Trace:
     return Trace(
         trace_id="jsonl-repository-trace",
         session_id="jsonl-session",
-        question="q",
+        question=question,
         root_span=root,
         status="success",
         total_duration_ms=100,

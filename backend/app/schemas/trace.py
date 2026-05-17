@@ -65,6 +65,9 @@ class Trace(BaseModel):
     session_id: str
     user_id: str | None = None
     question: str
+    question_hash: str | None = None
+    question_preview: str | None = None
+    question_length: int | None = None
     normalized_question: str | None = None
     app_env: str | None = None
     app_version: str | None = None
@@ -83,6 +86,11 @@ class Trace(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     closed_at: datetime | None = None
     total_duration_ms: float | None = None
+
+    @field_validator("question", mode="before")
+    @classmethod
+    def normalize_question(cls, value: Any) -> str:
+        return "" if value is None else str(value)
 
     @field_validator("status", mode="before")
     @classmethod

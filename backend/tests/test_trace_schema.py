@@ -17,6 +17,9 @@ def test_trace_schema_accepts_legacy_trace_payload() -> None:
     assert trace.trace_id == "legacy-trace"
     assert trace.status == TraceStatus.RUNNING
     assert trace.feature_flags == {}
+    assert trace.question_hash is None
+    assert trace.question_preview is None
+    assert trace.question_length is None
     assert trace.closed_at is None
     assert trace.root_span.duration_ms is None
 

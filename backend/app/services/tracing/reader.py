@@ -127,6 +127,7 @@ def _strict_export_value(value: Any, key: str) -> Any:
         return {
             str(child_key): _strict_export_value(child_value, str(child_key))
             for child_key, child_value in value.items()
+            if not _omit_null_preview(str(child_key), child_value)
         }
     if isinstance(value, list):
         return [_strict_export_value(item, normalized) for item in value[:20]]
@@ -267,6 +268,10 @@ def _is_sensitive_key(key: str) -> bool:
     )
 
 
+def _omit_null_preview(key: str, value: Any) -> bool:
+    return resolve_capture_mode() == "minimal" and value is None and key.endswith("_preview")
+
+
 def _is_script_key(key: str) -> bool:
     return (
         key in _SCRIPT_KEYS
@@ -287,7 +292,7 @@ def _redact_text(text: str) -> str:
         r"(?i)(refresh[_-]?token\s*[:=]\s*)[^\s,;]+",
         r"(?i)(bearer[_-]?token\s*[:=]\s*)[^\s,;]+",
         r"(?i)(auth[_-]?token\s*[:=]\s*)[^\s,;]+",
-        r"(?i)(authorization\s*[:=]\s*)[^\s,;]+",
+        r"(?i)(authorization\s*[:=]\s*)(bearer\s+)?[^\s,;]+",
         r"(?i)(password\s*[:=]\s*)[^\s,;]+",
         r"(?i)(secret\s*[:=]\s*)[^\s,;]+",
     ):

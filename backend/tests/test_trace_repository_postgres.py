@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.core.config import settings
 from app.schemas.trace import SpanKind, Trace, TraceSpan, TraceStatus
 from app.services.tracing.repository import PostgreSQLTraceRepository
 
@@ -39,12 +40,34 @@ def test_postgres_repository_save_get_list_and_health() -> None:
 
     assert loaded is not None
     assert loaded.trace_id == trace.trace_id
+    assert loaded.question_hash
+    assert loaded.question_preview == trace.question
+    assert loaded.question_length == len(trace.question)
     assert traces
     assert spans[0].name == span.name
     assert summaries[0]["span_count"] >= 1
     assert summaries[0]["slowest_span_name"] == span.name
+    assert summaries[0]["question_preview"] == trace.question
     assert health.backend == "postgres"
     assert health.healthy is True
+
+
+def test_postgres_repository_minimal_question_preview_is_null(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "trace_capture_mode", "minimal")
+    database_url = os.environ.get("TRACE_DATABASE_URL") or os.environ["DATABASE_URL"]
+    repository = PostgreSQLTraceRepository(database_url)
+    repository.initialize()
+    trace = _trace()
+
+    repository.save_trace(trace)
+    loaded = repository.get_trace(trace.trace_id)
+    summaries = repository.list_trace_summaries(limit=5, session_id=trace.session_id)
+
+    assert loaded is not None
+    assert loaded.question_hash
+    assert loaded.question_preview is None
+    assert loaded.question_length == len(trace.question)
+    assert summaries[0]["question_preview"] is None
 
 
 def _trace() -> Trace:

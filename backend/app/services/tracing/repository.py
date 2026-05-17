@@ -4,16 +4,18 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol
 
 from app.core.config import settings
 from app.schemas.trace import SpanKind, SpanStatus, Trace, TraceSpan, TraceStatus
+from app.services.tracing.persistence import (
+    question_persistence_fields,
+    sanitize_span_for_persistence,
+    sanitize_trace_for_persistence,
+)
 from app.services.tracing.serializers import (
     resolve_capture_mode,
-    sanitize_trace_dict,
-    sanitize_trace_value,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,8 +99,9 @@ class JsonlTraceRepository:
     def close_trace(self, trace: Trace) -> None:
         self.initialize()
         filepath = self.storage_path / "traces.jsonl"
+        payload = sanitize_trace_for_persistence(trace)
         with filepath.open("a", encoding="utf-8") as handle:
-            handle.write(trace.model_dump_json() + "\n")
+            handle.write(json.dumps(payload, ensure_ascii=False, default=_json_default) + "\n")
 
     def get_trace(self, trace_id: str) -> Trace | None:
         filepath = self.storage_path / "traces.jsonl"
@@ -239,12 +242,14 @@ class PostgreSQLTraceRepository:
     def save_trace(self, trace: Trace) -> None:
         from psycopg.types.json import Jsonb
 
+        persisted_trace = sanitize_trace_for_persistence(trace)
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     INSERT INTO agent_traces (
                         trace_id, run_id, session_id, user_id, question,
+                        question_hash, question_preview, question_length,
                         normalized_question, app_env, app_version, git_commit,
                         llm_provider, llm_model, embedding_model, reranker_model,
                         manual_id, index_version, index_sha256, feature_flags_json,
@@ -253,7 +258,8 @@ class PostgreSQLTraceRepository:
                     )
                     VALUES (
                         %(trace_id)s, %(run_id)s, %(session_id)s, %(user_id)s,
-                        %(question)s, %(normalized_question)s, %(app_env)s,
+                        %(question)s, %(question_hash)s, %(question_preview)s,
+                        %(question_length)s, %(normalized_question)s, %(app_env)s,
                         %(app_version)s, %(git_commit)s, %(llm_provider)s,
                         %(llm_model)s, %(embedding_model)s, %(reranker_model)s,
                         %(manual_id)s, %(index_version)s, %(index_sha256)s,
@@ -265,6 +271,9 @@ class PostgreSQLTraceRepository:
                         session_id = EXCLUDED.session_id,
                         user_id = EXCLUDED.user_id,
                         question = EXCLUDED.question,
+                        question_hash = EXCLUDED.question_hash,
+                        question_preview = EXCLUDED.question_preview,
+                        question_length = EXCLUDED.question_length,
                         normalized_question = EXCLUDED.normalized_question,
                         app_env = EXCLUDED.app_env,
                         app_version = EXCLUDED.app_version,
@@ -284,16 +293,14 @@ class PostgreSQLTraceRepository:
                     """,
                     {
                         **_trace_row(trace),
-                        "feature_flags_json": Jsonb(sanitize_trace_dict(trace.feature_flags or {})),
+                        "feature_flags_json": Jsonb(persisted_trace.get("feature_flags") or {}),
                     },
                 )
 
     def save_span(self, trace_id: str, span: TraceSpan) -> None:
         from psycopg.types.json import Jsonb
 
-        inputs = sanitize_trace_dict(span.inputs)
-        outputs = sanitize_trace_dict(span.outputs)
-        metadata = sanitize_trace_dict(span.metadata)
+        persisted = sanitize_span_for_persistence(span)
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -345,18 +352,18 @@ class PostgreSQLTraceRepository:
                         "start_time": span.start_time,
                         "end_time": span.end_time,
                         "duration_ms": span.duration_ms,
-                        "inputs_json": Jsonb(inputs),
-                        "outputs_json": Jsonb(outputs),
-                        "metadata_json": Jsonb(metadata),
-                        "error": span.error,
-                        "error_type": span.error_type,
-                        "attempt": span.attempt,
-                        "retry_count": span.retry_count,
-                        "fallback_used": span.fallback_used,
-                        "degraded": span.degraded,
-                        "token_usage_json": Jsonb(sanitize_trace_dict(span.token_usage)) if span.token_usage else None,
-                        "cost_estimate_json": Jsonb(sanitize_trace_dict(span.cost_estimate)) if span.cost_estimate else None,
-                        "quality_json": Jsonb(sanitize_trace_dict(span.quality)) if span.quality else None,
+                        "inputs_json": Jsonb(persisted.get("inputs") or {}),
+                        "outputs_json": Jsonb(persisted.get("outputs") or {}),
+                        "metadata_json": Jsonb(persisted.get("metadata") or {}),
+                        "error": persisted.get("error"),
+                        "error_type": persisted.get("error_type"),
+                        "attempt": persisted.get("attempt"),
+                        "retry_count": persisted.get("retry_count"),
+                        "fallback_used": bool(persisted.get("fallback_used")),
+                        "degraded": bool(persisted.get("degraded")),
+                        "token_usage_json": Jsonb(persisted.get("token_usage")) if persisted.get("token_usage") else None,
+                        "cost_estimate_json": Jsonb(persisted.get("cost_estimate")) if persisted.get("cost_estimate") else None,
+                        "quality_json": Jsonb(persisted.get("quality")) if persisted.get("quality") else None,
                         "created_at": datetime.now(timezone.utc),
                     },
                 )
@@ -431,7 +438,7 @@ class PostgreSQLTraceRepository:
                         t.created_at,
                         t.closed_at,
                         t.total_duration_ms,
-                        t.question,
+                        t.question_preview,
                         COALESCE(stats.span_count, 0) AS span_count,
                         COALESCE(stats.error_count, 0) AS error_count,
                         COALESCE(stats.degraded, FALSE) AS degraded,
@@ -469,7 +476,7 @@ class PostgreSQLTraceRepository:
                         "created_at": row["created_at"],
                         "closed_at": row.get("closed_at"),
                         "total_duration_ms": row.get("total_duration_ms"),
-                        "question_preview": row.get("question"),
+                        "question_preview": row.get("question_preview"),
                         "span_count": int(row.get("span_count") or 0),
                         "error_count": int(row.get("error_count") or 0),
                         "degraded": bool(row.get("degraded")),
@@ -581,6 +588,12 @@ def _resolve_storage_path(storage_path: Path | None) -> Path:
     return Path(storage)
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
 def _walk_spans(span: TraceSpan):
     yield span
     for child in span.children:
@@ -594,13 +607,17 @@ def _span_flag(span: TraceSpan, key: str) -> bool:
 
 
 def _trace_row(trace: Trace) -> dict[str, Any]:
+    question_fields = question_persistence_fields(trace.question)
     return {
         "trace_id": trace.trace_id,
         "run_id": trace.run_id,
         "session_id": trace.session_id,
         "user_id": trace.user_id,
-        "question": _text_column(trace.question, "question"),
-        "normalized_question": _text_column(trace.normalized_question, "normalized_question"),
+        "question": question_fields["question"],
+        "question_hash": question_fields["question_hash"],
+        "question_preview": question_fields["question_preview"],
+        "question_length": question_fields["question_length"],
+        "normalized_question": _safe_text_column(trace.normalized_question),
         "app_env": trace.app_env,
         "app_version": trace.app_version,
         "git_commit": trace.git_commit,
@@ -642,7 +659,10 @@ def _trace_from_rows(trace_row: dict[str, Any], span_rows: list[dict[str, Any]])
         run_id=trace_row.get("run_id"),
         session_id=trace_row.get("session_id") or "",
         user_id=trace_row.get("user_id"),
-        question=trace_row.get("question") or "",
+        question=trace_row.get("question_preview") or trace_row.get("question") or "",
+        question_hash=trace_row.get("question_hash"),
+        question_preview=trace_row.get("question_preview"),
+        question_length=trace_row.get("question_length"),
         normalized_question=trace_row.get("normalized_question"),
         app_env=trace_row.get("app_env"),
         app_version=trace_row.get("app_version"),
@@ -713,23 +733,13 @@ def _normalize_span_status_value(value: Any) -> str:
     return normalized
 
 
-def _text_column(value: Any, key: str) -> str | None:
+def _safe_text_column(value: Any) -> str | None:
     if value is None:
         return None
     mode = resolve_capture_mode()
-    text = str(value)
     if mode == "minimal":
-        return f"{key}_sha256:{sha256(text.encode('utf-8')).hexdigest()}"
-    summary_key = "question" if key.endswith("question") else key
-    sanitized = sanitize_trace_value(text, summary_key, capture_mode=mode)
-    if isinstance(sanitized, dict):
-        preview = sanitized.get(f"{key}_preview") or sanitized.get("question_preview")
-        if preview:
-            return str(preview)
-        digest = sanitized.get(f"{key}_hash")
-        if digest:
-            return f"{key}_sha256:{digest}"
-    return str(sanitized)
+        return None
+    return question_persistence_fields(str(value), mode)["question_preview"]
 
 
 _TRACE_TABLE_SQL = """
@@ -739,6 +749,9 @@ CREATE TABLE IF NOT EXISTS agent_traces (
   session_id TEXT NOT NULL,
   user_id TEXT,
   question TEXT,
+  question_hash TEXT,
+  question_preview TEXT,
+  question_length INTEGER,
   normalized_question TEXT,
   app_env TEXT,
   app_version TEXT,
@@ -790,6 +803,7 @@ _INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_agent_traces_session_id ON agent_traces(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_agent_traces_created_at ON agent_traces(created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_agent_traces_status ON agent_traces(status)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_traces_question_hash ON agent_traces(question_hash)",
     "CREATE INDEX IF NOT EXISTS idx_agent_trace_spans_trace_id ON agent_trace_spans(trace_id)",
     "CREATE INDEX IF NOT EXISTS idx_agent_trace_spans_kind ON agent_trace_spans(kind)",
     "CREATE INDEX IF NOT EXISTS idx_agent_trace_spans_name ON agent_trace_spans(name)",
@@ -812,6 +826,9 @@ ALTER TABLE agent_traces
   ADD COLUMN IF NOT EXISTS run_id TEXT,
   ADD COLUMN IF NOT EXISTS user_id TEXT,
   ADD COLUMN IF NOT EXISTS question TEXT,
+  ADD COLUMN IF NOT EXISTS question_hash TEXT,
+  ADD COLUMN IF NOT EXISTS question_preview TEXT,
+  ADD COLUMN IF NOT EXISTS question_length INTEGER,
   ADD COLUMN IF NOT EXISTS normalized_question TEXT,
   ADD COLUMN IF NOT EXISTS app_env TEXT,
   ADD COLUMN IF NOT EXISTS app_version TEXT,

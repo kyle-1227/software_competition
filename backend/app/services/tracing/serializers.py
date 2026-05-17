@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from hashlib import sha256
+import re
 from typing import Any
 
 SENSITIVE_KEYS = {
@@ -110,17 +111,20 @@ def _sanitize_list(items: list[Any], mode: str) -> list[Any]:
 
 
 def _truncate_string(value: str, limit: int = MAX_STRING_LENGTH) -> str:
+    value = _redact_text(value)
     if len(value) <= limit:
         return value
     return value[:limit] + "...[truncated]"
 
 
 def _preview(value: str, limit: int = MAX_PREVIEW_LENGTH) -> str:
+    value = _redact_text(value)
     return value[:limit] + ("..." if len(value) > limit else "")
 
 
 def _summarize_text(value: Any, key: str, mode: str) -> dict[str, Any]:
     text = str(value or "")
+    redacted = _redact_text(text)
     summary = {
         f"{key}_hash": sha256(text.encode("utf-8")).hexdigest(),
         f"{key}_length": len(text),
@@ -133,7 +137,7 @@ def _summarize_text(value: Any, key: str, mode: str) -> dict[str, Any]:
     if mode != "minimal":
         preview_limit = DEBUG_PREVIEW_LENGTH if mode == "debug" else MAX_PREVIEW_LENGTH
         preview_key = "answer_preview" if key == "answer" else f"{key}_preview"
-        summary[preview_key] = _preview(text, preview_limit)
+        summary[preview_key] = _preview(redacted, preview_limit)
     return summary
 
 
@@ -153,13 +157,14 @@ def _summarize_script(value: Any, key: str, mode: str) -> dict[str, Any]:
         text = str(value)
     else:
         text = str(value or "")
+    redacted = _redact_text(text)
     summary = {
         f"{key}_hash": sha256(text.encode("utf-8")).hexdigest(),
         f"{key}_length": len(text),
     }
     if mode != "minimal":
         preview_limit = DEBUG_PREVIEW_LENGTH if mode == "debug" else MAX_PREVIEW_LENGTH
-        summary[f"{key}_preview"] = _preview(text, preview_limit)
+        summary[f"{key}_preview"] = _preview(redacted, preview_limit)
     return summary
 
 
@@ -210,3 +215,20 @@ def _string_limit_for_mode(mode: str) -> int:
     if mode == "minimal":
         return MAX_PREVIEW_LENGTH
     return MAX_STRING_LENGTH
+
+
+def _redact_text(text: str) -> str:
+    redacted = text
+    for pattern in (
+        r"(?i)(api[_-]?key\s*[:=]\s*)[^\s,;]+",
+        r"(?i)(access[_-]?token\s*[:=]\s*)[^\s,;]+",
+        r"(?i)(refresh[_-]?token\s*[:=]\s*)[^\s,;]+",
+        r"(?i)(bearer[_-]?token\s*[:=]\s*)[^\s,;]+",
+        r"(?i)(auth[_-]?token\s*[:=]\s*)[^\s,;]+",
+        r"(?i)(authorization\s*[:=]\s*)(bearer\s+)?[^\s,;]+",
+        r"(?i)(password\s*[:=]\s*)[^\s,;]+",
+        r"(?i)(secret\s*[:=]\s*)[^\s,;]+",
+        r"(?i)(token\s*[:=]\s*)[^\s,;]+",
+    ):
+        redacted = re.sub(pattern, r"\1[REDACTED]", redacted)
+    return redacted
