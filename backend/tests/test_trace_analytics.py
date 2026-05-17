@@ -51,6 +51,25 @@ def test_trace_analytics_builds_bottleneck_and_flags() -> None:
     assert result["degraded"] is True
 
 
+def test_trace_analytics_prefers_retrieval_failure_over_fallback_degraded() -> None:
+    trace = _trace(
+        _span(
+            "retriever.vector_search",
+            SpanKind.RETRIEVER,
+            outputs={"evidence_count": 0, "placeholder_used": True},
+            metadata={"fallback_used": True, "degraded": True},
+        )
+    )
+
+    assert classify_failure(trace)["failure_type"] == "retrieval_failure"
+
+
+def test_trace_analytics_classifies_policy_approval_required() -> None:
+    trace = _trace(_span("node.approval", SpanKind.NODE))
+
+    assert classify_failure(trace)["failure_type"] == "policy_approval_required"
+
+
 def _trace(*spans: TraceSpan) -> Trace:
     started = datetime(2026, 1, 1, tzinfo=timezone.utc)
     root = TraceSpan(
@@ -67,7 +86,7 @@ def _trace(*spans: TraceSpan) -> Trace:
         question="q",
         root_span=root,
         total_duration_ms=100,
-        status="ok",
+        status="success",
     )
 
 

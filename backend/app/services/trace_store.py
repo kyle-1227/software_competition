@@ -9,8 +9,12 @@ from uuid import uuid4
 
 from app.core.config import settings
 from app.schemas.query import EvidenceItem, EvaluationResult, PlanStep, ToolCallItem
-from app.schemas.trace import SpanKind, SpanStatus, Trace, TraceSpan
-from app.services.tracing.repository import TraceRepository, build_trace_repository
+from app.schemas.trace import SpanKind, SpanStatus, Trace, TraceSpan, TraceStatus
+from app.services.tracing.repository import (
+    RepositoryHealth,
+    TraceRepository,
+    build_trace_repository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +32,8 @@ class TraceStore:
         self._closed_trace_sessions: dict[str, Trace] = {}
         self._storage_path = storage_path
         self._repository = repository or build_trace_repository(storage_path)
+        self._last_error: str | None = None
+        self._degraded = False
 
     # ------------------------------------------------------------------
     # Flat trace compatibility API
@@ -131,7 +137,7 @@ class TraceStore:
             index_version=metadata.get("index_version"),
             index_sha256=metadata.get("index_sha256"),
             feature_flags=metadata.get("feature_flags", {}),
-            status="running",
+            status=TraceStatus.RUNNING,
             created_at=created_at,
         )
         self._trace_sessions[trace_id] = trace
@@ -182,7 +188,7 @@ class TraceStore:
             trace.closed_at - trace.created_at
         ).total_seconds() * 1000
         trace.root_span.duration_ms = trace.total_duration_ms
-        trace.status = status or ("error" if _trace_has_error(trace) else "ok")
+        trace.status = _closed_status(status, trace)
         answer = self._traces.get(trace_id, {}).get("answer")
         if isinstance(answer, str) and answer:
             trace.final_answer_hash = hashlib.sha256(answer.encode("utf-8")).hexdigest()
@@ -212,8 +218,51 @@ class TraceStore:
         try:
             return self._repository.list_traces(limit, session_id, status)
         except Exception as exc:
-            logger.warning("Failed to list traces from repository: %s", exc)
+            self._record_repository_error("list_traces", exc)
             return list(self._closed_trace_sessions.values())[-limit:]
+
+    def list_trace_summaries(
+        self,
+        limit: int = 50,
+        session_id: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        try:
+            list_summaries = getattr(self._repository, "list_trace_summaries", None)
+            if callable(list_summaries):
+                return list_summaries(limit, session_id, status)
+        except Exception as exc:
+            self._record_repository_error("list_trace_summaries", exc)
+        from app.services.tracing.summary import build_trace_summary
+
+        summaries: list[dict[str, Any]] = []
+        traces = list(self._closed_trace_sessions.values())[-limit:]
+        for trace in reversed(traces):
+            if session_id and trace.session_id != session_id:
+                continue
+            if status and str(getattr(trace.status, "value", trace.status)) != str(status):
+                continue
+            summary = build_trace_summary(trace)
+            slowest = summary.get("slowest_spans") or []
+            spans = [span for span in _walk_spans(trace.root_span) if span is not trace.root_span]
+            summaries.append(
+                {
+                    "trace_id": trace.trace_id,
+                    "session_id": trace.session_id,
+                    "status": str(getattr(trace.status, "value", trace.status)),
+                    "created_at": trace.created_at,
+                    "closed_at": trace.closed_at,
+                    "total_duration_ms": trace.total_duration_ms,
+                    "question_preview": summary.get("question_preview"),
+                    "span_count": summary.get("span_count", 0),
+                    "error_count": summary.get("error_count", 0),
+                    "degraded": any(_span_flag(span, "degraded") for span in spans),
+                    "fallback_used": any(_span_flag(span, "fallback_used") for span in spans),
+                    "slowest_span_name": slowest[0].get("name") if slowest else None,
+                    "degraded_tool_names": summary.get("degraded_tool_names", []),
+                }
+            )
+        return summaries
 
     def list_spans(self, trace_id: str) -> list[TraceSpan]:
         trace = self._trace_sessions.get(trace_id) or self._closed_trace_sessions.get(trace_id)
@@ -222,13 +271,42 @@ class TraceStore:
         try:
             return self._repository.list_spans(trace_id)
         except Exception as exc:
-            logger.warning("Failed to list spans for trace %s: %s", trace_id, exc)
+            self._record_repository_error("list_spans", exc)
             return []
 
     def healthcheck(self) -> bool:
+        return self.health_status()["healthy"]
+
+    def health_status(self) -> dict[str, Any]:
+        try:
+            health = self._repository.health_status()
+        except Exception as exc:
+            self._record_repository_error("health_status", exc)
+            health = RepositoryHealth(
+                backend="unknown",
+                configured_backend=getattr(settings, "trace_backend", "auto"),
+                healthy=False,
+                degraded=True,
+                last_error=self._last_error,
+                storage_path=str(self._storage_path) if self._storage_path else None,
+                database_url_configured=bool(
+                    getattr(settings, "trace_database_url", None)
+                    or getattr(settings, "database_url", None)
+                ),
+                capture_mode=getattr(settings, "trace_capture_mode", "summary"),
+            )
+        data = health.to_dict()
+        if self._last_error:
+            data["last_error"] = self._last_error
+        data["degraded"] = bool(data.get("degraded")) or self._degraded
+        data["healthy"] = bool(data.get("healthy")) and not self._degraded
+        return data
+
+    def _repository_healthcheck(self) -> bool:
         try:
             return self._repository.healthcheck()
-        except Exception:
+        except Exception as exc:
+            self._record_repository_error("healthcheck", exc)
             return False
 
     def _find_span(self, span: TraceSpan, span_id: str | None) -> TraceSpan | None:
@@ -242,12 +320,16 @@ class TraceStore:
                 return found
         return None
 
-    @staticmethod
-    def _safe_repo_call(label: str, fn, *args) -> None:
+    def _safe_repo_call(self, label: str, fn, *args) -> None:
         try:
             fn(*args)
         except Exception as exc:
-            logger.warning("Trace repository %s failed: %s", label, exc)
+            self._record_repository_error(label, exc)
+
+    def _record_repository_error(self, label: str, exc: Exception) -> None:
+        self._last_error = f"{label}: {str(exc)[:500]}"
+        self._degraded = True
+        logger.warning("Trace repository %s failed: %s", label, exc)
 
 
 def _empty_flat_trace() -> dict[str, object]:
@@ -272,8 +354,28 @@ def _trace_has_error(trace: Trace) -> bool:
     return any(span.status == SpanStatus.ERROR for span in _walk_spans(trace.root_span))
 
 
+def _closed_status(status: str | TraceStatus | None, trace: Trace) -> TraceStatus:
+    if status is not None:
+        return Trace.model_validate(
+            {
+                "trace_id": "status-normalizer",
+                "session_id": "status-normalizer",
+                "question": "status-normalizer",
+                "root_span": {"name": "harness", "kind": "agent"},
+                "status": str(getattr(status, "value", status)),
+            }
+        ).status
+    return TraceStatus.ERROR if _trace_has_error(trace) else TraceStatus.SUCCESS
+
+
 def _normalize_question(question: str) -> str:
     return " ".join(str(question or "").lower().split())
+
+
+def _span_flag(span: TraceSpan, key: str) -> bool:
+    metadata = span.metadata if isinstance(span.metadata, dict) else {}
+    outputs = span.outputs if isinstance(span.outputs, dict) else {}
+    return bool(getattr(span, key, False) or metadata.get(key) or outputs.get(key))
 
 
 def _truthy(value: Any) -> bool:

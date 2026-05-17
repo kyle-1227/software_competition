@@ -11,7 +11,11 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.schemas.trace import Trace
-from app.services.tracing.serializers import sanitize_trace_dict, sanitize_trace_value
+from app.services.tracing.serializers import (
+    resolve_capture_mode,
+    sanitize_trace_dict,
+    sanitize_trace_value,
+)
 
 _PREVIEW_LIMIT = 120
 _SENSITIVE_KEYS = {
@@ -132,16 +136,38 @@ def _strict_export_value(value: Any, key: str) -> Any:
 
 
 def _text_summary(value: Any, key: str) -> dict[str, Any]:
+    mode = resolve_capture_mode()
+    if isinstance(value, Mapping):
+        existing_hash = value.get(f"{key}_hash") or value.get("answer_hash")
+        existing_length = value.get(f"{key}_length") or value.get("answer_length")
+        existing_preview = (
+            value.get(f"{key}_preview")
+            or value.get("answer_preview")
+            or value.get("prompt_preview")
+            or value.get("question_preview")
+        )
+        if existing_hash or existing_length is not None:
+            summary: dict[str, Any] = {}
+            if existing_hash:
+                summary[f"{key}_hash"] = existing_hash
+            if existing_length is not None:
+                summary[f"{key}_length"] = existing_length
+            if mode != "minimal" and existing_preview:
+                summary[f"{key}_preview"] = _preview(_redact_text(str(existing_preview)))
+            return summary
     text = _text_from_sanitized_summary(value)
     redacted = _redact_text(text)
-    return {
+    summary = {
         f"{key}_hash": sha256(redacted.encode("utf-8")).hexdigest(),
         f"{key}_length": len(redacted),
-        f"{key}_preview": _preview(redacted),
     }
+    if mode != "minimal":
+        summary[f"{key}_preview"] = _preview(redacted)
+    return summary
 
 
 def _script_summary(value: Any, key: str) -> dict[str, Any]:
+    mode = resolve_capture_mode()
     if isinstance(value, Mapping):
         existing_hash = (
             value.get(f"{key}_hash")
@@ -160,29 +186,34 @@ def _script_summary(value: Any, key: str) -> dict[str, Any]:
             summary: dict[str, Any] = {}
             if existing_hash:
                 summary[f"{key}_hash"] = existing_hash
-            if existing_preview:
+            if mode != "minimal" and existing_preview:
                 summary[f"{key}_preview"] = _preview(_redact_text(str(existing_preview)))
             if existing_length is not None:
                 summary[f"{key}_length"] = existing_length
             return summary
 
     text = _redact_text(str(value or ""))
-    return {
+    summary = {
         f"{key}_hash": sha256(text.encode("utf-8")).hexdigest(),
         f"{key}_length": len(text),
-        f"{key}_preview": _preview(text),
     }
+    if mode != "minimal":
+        summary[f"{key}_preview"] = _preview(text)
+    return summary
 
 
 def _evidence_summary(value: Any) -> dict[str, Any]:
+    mode = resolve_capture_mode()
     if isinstance(value, Mapping):
-        return {
+        summary = {
             "evidence_count": value.get("evidence_count", 0),
             "retrieved_pages": value.get("retrieved_pages", []),
-            "top_snippet_preview": _preview(
-                _redact_text(str(value.get("top_snippet_preview") or ""))
-            ),
         }
+        if mode != "minimal":
+            summary["top_snippet_preview"] = _preview(
+                _redact_text(str(value.get("top_snippet_preview") or ""))
+            )
+        return summary
     if not isinstance(value, list):
         return {"evidence_count": 0, "retrieved_pages": []}
 
@@ -198,11 +229,13 @@ def _evidence_summary(value: Any) -> dict[str, Any]:
             pages.append(page)
         if not top_preview:
             top_preview = _preview(_redact_text(str(item.get("snippet") or "")))
-    return {
+    summary = {
         "evidence_count": count,
         "retrieved_pages": pages[:20],
-        "top_snippet_preview": top_preview,
     }
+    if mode != "minimal":
+        summary["top_snippet_preview"] = top_preview
+    return summary
 
 
 def _text_from_sanitized_summary(value: Any) -> str:

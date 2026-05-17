@@ -1,6 +1,23 @@
 from __future__ import annotations
 
-from typing import Any
+from enum import Enum
+from typing import Any, Callable
+
+
+class FailureType(str, Enum):
+    SUCCESS = "success"
+    RETRIEVAL_FAILURE = "retrieval_failure"
+    RERANKER_FAILURE = "reranker_failure"
+    LLM_FAILURE = "llm_failure"
+    TOOL_FAILURE = "tool_failure"
+    SANDBOX_REJECTED = "sandbox_rejected"
+    GUARDRAIL_BLOCKED = "guardrail_blocked"
+    POLICY_APPROVAL_REQUIRED = "policy_approval_required"
+    EVALUATOR_LOW_CONFIDENCE = "evaluator_low_confidence"
+    MEMORY_FAILURE = "memory_failure"
+    TRACE_REPOSITORY_FAILURE = "trace_repository_failure"
+    FALLBACK_DEGRADED = "fallback_degraded"
+    UNKNOWN_FAILURE = "unknown_failure"
 
 
 def build_trace_analytics(trace: Any) -> dict[str, Any]:
@@ -21,30 +38,114 @@ def build_trace_analytics(trace: Any) -> dict[str, Any]:
 
 def classify_failure(trace: Any) -> dict[str, Any]:
     spans = _observed_spans(trace)
-    rules = [
-        ("guardrail_blocked", _is_guardrail_blocked, "Guardrail blocked the request.", "检查输入/输出安全策略和用户请求范围。"),
-        ("approval_required", _is_approval_required, "Human approval was required.", "检查高风险操作、低证据结论或 sandbox 限制。"),
-        ("sandbox_rejected", _is_sandbox_rejected, "Sandbox rejected or failed execution.", "检查脚本限制、语言、超时和安全策略。"),
-        ("fallback_degraded", _is_fallback_degraded, "Fallback or degraded mode was used.", "检查降级 span 和上游服务可用性。"),
-        ("tool_failure", _is_tool_failure, "A tool span failed.", "检查工具 retry attempt、错误信息和依赖服务。"),
-        ("retrieval_failure", _is_retrieval_failure, "Retrieval produced no effective evidence or placeholder evidence.", "检查索引、embedding、chunking、query rewrite 和 reranker。"),
-        ("llm_failure", _is_llm_failure, "LLM generation failed or used local fallback.", "检查 LLM provider 配置、模型可用性和限流。"),
-        ("evaluator_low_confidence", _is_evaluator_low_confidence, "Evaluator confidence was low.", "检查 evidence 覆盖、答案引用和 evaluator feedback。"),
+    if not spans and trace is not None:
+        return _classification(
+            FailureType.UNKNOWN_FAILURE,
+            None,
+            "Trace contains no observable spans.",
+            "Inspect trace ingestion and span recording configuration.",
+        )
+
+    rules: list[tuple[FailureType, Callable[[Any], bool], str, str]] = [
+        (
+            FailureType.RETRIEVAL_FAILURE,
+            _is_retrieval_failure,
+            "Retrieval produced no effective evidence or placeholder evidence.",
+            "Check vector index build, chunking, embedding model, query rewrite, and retriever filters.",
+        ),
+        (
+            FailureType.RERANKER_FAILURE,
+            _is_reranker_failure,
+            "Reranker failed or selected no usable candidates.",
+            "Check reranker provider, candidate count, top_n, and fallback path.",
+        ),
+        (
+            FailureType.LLM_FAILURE,
+            _is_llm_failure,
+            "LLM generation failed or used a local fallback.",
+            "Check LLM provider configuration, model availability, quota, and timeout settings.",
+        ),
+        (
+            FailureType.TOOL_FAILURE,
+            _is_tool_failure,
+            "A tool span failed after retries.",
+            "Inspect tool retry attempt spans, payload summaries, and upstream dependency health.",
+        ),
+        (
+            FailureType.SANDBOX_REJECTED,
+            _is_sandbox_rejected,
+            "Sandbox rejected or failed execution.",
+            "Check sandbox policy, language, timeout, return code, and generated script safety.",
+        ),
+        (
+            FailureType.GUARDRAIL_BLOCKED,
+            _is_guardrail_blocked,
+            "Guardrail blocked the request or response.",
+            "Review safety policy configuration and blocked input/output categories.",
+        ),
+        (
+            FailureType.POLICY_APPROVAL_REQUIRED,
+            _is_approval_required,
+            "Human approval was required by policy.",
+            "Review high-risk actions, low-evidence conclusions, and sandbox outcomes.",
+        ),
+        (
+            FailureType.EVALUATOR_LOW_CONFIDENCE,
+            _is_evaluator_low_confidence,
+            "Evaluator confidence was below threshold.",
+            "Check evidence coverage, answer citations, and evaluator feedback.",
+        ),
+        (
+            FailureType.MEMORY_FAILURE,
+            _is_memory_failure,
+            "Memory load or save failed.",
+            "Check memory storage connectivity and serialization errors.",
+        ),
+        (
+            FailureType.TRACE_REPOSITORY_FAILURE,
+            _is_trace_repository_failure,
+            "Trace repository degraded or failed.",
+            "Check trace repository health, database connectivity, and migration state.",
+        ),
+        (
+            FailureType.FALLBACK_DEGRADED,
+            _is_fallback_degraded,
+            "Fallback or degraded mode was used.",
+            "Inspect degraded spans and upstream service availability.",
+        ),
     ]
     for failure_type, predicate, reason, suggested_fix in rules:
         span = next((item for item in spans if predicate(item)), None)
         if span is not None:
-            return {
-                "failure_type": failure_type,
-                "root_cause_span": _span_ref(span),
-                "reason": reason,
-                "suggested_fix": suggested_fix,
-            }
+            return _classification(failure_type, span, reason, suggested_fix)
+
+    status = _enum_value(getattr(trace, "status", None))
+    if status == "error":
+        return _classification(
+            FailureType.UNKNOWN_FAILURE,
+            None,
+            "Trace ended in error but no specific failure signal matched.",
+            "Inspect the trace timeline and root span error fields.",
+        )
+    return _classification(
+        FailureType.SUCCESS,
+        None,
+        "No dominant failure signal was found.",
+        "No action required unless the answer quality is still below expectations.",
+    )
+
+
+def _classification(
+    failure_type: FailureType,
+    span: Any,
+    reason: str,
+    suggested_fix: str,
+) -> dict[str, Any]:
     return {
-        "failure_type": "success",
-        "root_cause_span": None,
-        "reason": "No dominant failure signal was found.",
-        "suggested_fix": "无需处理；如结果仍不符合预期，请查看 timeline 和 evidence。",
+        "failure_type": failure_type.value,
+        "root_cause_span": _span_ref(span) if span is not None else None,
+        "reason": reason,
+        "suggested_fix": suggested_fix,
     }
 
 
@@ -61,16 +162,30 @@ def _walk_spans(span: Any):
         yield from _walk_spans(child)
 
 
-def _is_guardrail_blocked(span: Any) -> bool:
+def _is_retrieval_failure(span: Any) -> bool:
     name = _name(span)
-    metadata = _data(span)
-    return "guardrail" in name and (_is_error(span) or metadata.get("blocked") is True)
+    data = _data(span)
+    if name == "retriever.vector_search":
+        return bool(data.get("placeholder_used")) or int(data.get("evidence_count") or 0) == 0
+    return name == "node.retrieval_retry" and _is_error(span)
 
 
-def _is_approval_required(span: Any) -> bool:
-    return _name(span) == "node.approval" or bool(
-        _data(span).get("requires_human_approval")
+def _is_reranker_failure(span: Any) -> bool:
+    if _name(span) != "reranker.score":
+        return False
+    data = _data(span)
+    selected = data.get("selected_count")
+    return _is_error(span) or selected == 0 or data.get("degraded") is True
+
+
+def _is_llm_failure(span: Any) -> bool:
+    return _name(span).startswith("llm.") and (
+        _is_error(span) or bool(_data(span).get("local_fallback"))
     )
+
+
+def _is_tool_failure(span: Any) -> bool:
+    return _name(span).startswith("tool.") and _is_error(span)
 
 
 def _is_sandbox_rejected(span: Any) -> bool:
@@ -80,24 +195,15 @@ def _is_sandbox_rejected(span: Any) -> bool:
     return _is_error(span) or data.get("allowed") is False or data.get("return_code") not in (None, 0)
 
 
-def _is_fallback_degraded(span: Any) -> bool:
-    return _span_flag(span, "degraded") or _span_flag(span, "fallback_used")
-
-
-def _is_tool_failure(span: Any) -> bool:
-    return _name(span).startswith("tool.") and _is_error(span)
-
-
-def _is_retrieval_failure(span: Any) -> bool:
-    if _name(span) != "retriever.vector_search":
-        return False
+def _is_guardrail_blocked(span: Any) -> bool:
+    name = _name(span)
     data = _data(span)
-    return bool(data.get("placeholder_used")) or int(data.get("evidence_count") or 0) == 0
+    return "guardrail" in name and (_is_error(span) or data.get("blocked") is True)
 
 
-def _is_llm_failure(span: Any) -> bool:
-    return _name(span) == "llm.answer_generation" and (
-        _is_error(span) or bool(_data(span).get("local_fallback"))
+def _is_approval_required(span: Any) -> bool:
+    return _name(span) == "node.approval" or bool(
+        _data(span).get("requires_human_approval")
     )
 
 
@@ -113,6 +219,19 @@ def _is_evaluator_low_confidence(span: Any) -> bool:
         return float(confidence) < 0.7
     except (TypeError, ValueError):
         return False
+
+
+def _is_memory_failure(span: Any) -> bool:
+    return (_name(span).startswith("node.memory") or _enum_value(getattr(span, "kind", None)) == "memory") and _is_error(span)
+
+
+def _is_trace_repository_failure(span: Any) -> bool:
+    data = _data(span)
+    return _name(span).startswith("trace.repository") or data.get("trace_repository_failure") is True
+
+
+def _is_fallback_degraded(span: Any) -> bool:
+    return _span_flag(span, "degraded") or _span_flag(span, "fallback_used")
 
 
 def _bottleneck_span(spans: list[Any]) -> dict[str, Any] | None:

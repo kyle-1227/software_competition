@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.schemas.trace import SpanKind, Trace, TraceSpan
+from app.schemas.trace import SpanKind, Trace, TraceSpan, TraceStatus
 
 
 def test_trace_schema_accepts_legacy_trace_payload() -> None:
@@ -15,7 +15,7 @@ def test_trace_schema_accepts_legacy_trace_payload() -> None:
     )
 
     assert trace.trace_id == "legacy-trace"
-    assert trace.status == "running"
+    assert trace.status == TraceStatus.RUNNING
     assert trace.feature_flags == {}
     assert trace.closed_at is None
     assert trace.root_span.duration_ms is None
@@ -51,6 +51,21 @@ def test_trace_schema_round_trips_production_fields() -> None:
     loaded = Trace.model_validate(trace.model_dump(mode="json"))
 
     assert loaded.run_id == "run-1"
+    assert loaded.status == TraceStatus.SUCCESS
     assert loaded.total_duration_ms == 20.0
     assert loaded.root_span.children[0].fallback_used is True
     assert loaded.root_span.children[0].quality == {"confidence": 0.8}
+
+
+def test_trace_schema_maps_unknown_status_to_error() -> None:
+    trace = Trace.model_validate(
+        {
+            "trace_id": "legacy-trace",
+            "session_id": "session",
+            "question": "question",
+            "root_span": {"name": "harness", "kind": "agent"},
+            "status": "unexpected",
+        }
+    )
+
+    assert trace.status == TraceStatus.ERROR

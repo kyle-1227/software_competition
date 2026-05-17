@@ -1,4 +1,5 @@
 from app.schemas.query import EvidenceItem, EvaluationResult, PlanStep, SandboxResult
+from app.schemas.trace import TraceStatus
 from app.services.trace_store import TraceStore
 
 
@@ -50,4 +51,56 @@ def test_trace_store_close_trace_calculates_total_duration(tmp_path) -> None:
     assert trace is not None
     assert trace.closed_at is not None
     assert trace.total_duration_ms is not None
-    assert trace.status == "ok"
+    assert trace.status == TraceStatus.SUCCESS
+
+
+def test_trace_store_records_repository_failure_health(tmp_path) -> None:
+    store = TraceStore(storage_path=tmp_path, repository=_FailingRepository())
+    trace_id = store.start_trace(session_id="session-1", question="q")
+
+    store.close_trace(trace_id)
+    health = store.health_status()
+
+    assert health["healthy"] is False
+    assert health["degraded"] is True
+    assert "repository unavailable" in health["last_error"]
+
+
+class _FailingRepository:
+    def initialize(self):
+        return None
+
+    def save_trace(self, trace):
+        raise RuntimeError("repository unavailable")
+
+    def save_span(self, trace_id, span):
+        raise RuntimeError("repository unavailable")
+
+    def close_trace(self, trace):
+        raise RuntimeError("repository unavailable")
+
+    def get_trace(self, trace_id):
+        return None
+
+    def list_traces(self, limit=50, session_id=None, status=None):
+        return []
+
+    def list_trace_summaries(self, limit=50, session_id=None, status=None):
+        return []
+
+    def list_spans(self, trace_id):
+        return []
+
+    def healthcheck(self):
+        return False
+
+    def health_status(self):
+        from app.services.tracing.repository import RepositoryHealth
+
+        return RepositoryHealth(
+            backend="failing",
+            configured_backend="failing",
+            healthy=False,
+            degraded=True,
+            last_error="repository unavailable",
+        )

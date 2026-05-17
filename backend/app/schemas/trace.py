@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class SpanKind(str, Enum):
@@ -25,6 +25,13 @@ class SpanStatus(str, Enum):
     OK = "ok"
     ERROR = "error"
     SKIPPED = "skipped"
+
+
+class TraceStatus(str, Enum):
+    RUNNING = "running"
+    SUCCESS = "success"
+    ERROR = "error"
+    CANCELLED = "cancelled"
 
 
 class TraceSpan(BaseModel):
@@ -70,9 +77,22 @@ class Trace(BaseModel):
     index_version: str | None = None
     index_sha256: str | None = None
     feature_flags: dict[str, Any] = Field(default_factory=dict)
-    status: str = "running"
+    status: TraceStatus = TraceStatus.RUNNING
     final_answer_hash: str | None = None
     root_span: TraceSpan
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     closed_at: datetime | None = None
     total_duration_ms: float | None = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, value: Any) -> TraceStatus:
+        if isinstance(value, TraceStatus):
+            return value
+        normalized = str(value or TraceStatus.RUNNING.value).lower()
+        if normalized == "ok":
+            return TraceStatus.SUCCESS
+        try:
+            return TraceStatus(normalized)
+        except ValueError:
+            return TraceStatus.ERROR

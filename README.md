@@ -149,6 +149,10 @@ Trace span coverage now feeds a small usage layer for debugging, demos, and eval
 
 Safety boundary: these outputs do not include full prompts, answers, scripts, large evidence, API keys, tokens, passwords, secrets, or reasoning/thinking fields.
 
+## Production Readiness Gaps
+
+Open production gaps are tracked in [`docs/production_readiness_gaps.md`](docs/production_readiness_gaps.md). Trace gaps are recorded there first, and future gaps for Memory, RAG, ToolBroker, Sandbox, Guardrail, Eval, API, and Frontend should be added to the same document.
+
 ## Trace Export & API
 
 Closed traces can be exported by id for local debugging, eval failure review, frontend trace display, and competition demos.

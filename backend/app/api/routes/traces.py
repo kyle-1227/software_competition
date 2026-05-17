@@ -27,9 +27,19 @@ async def list_traces(
     status: str | None = None,
     trace_store: TraceStore = Depends(get_trace_store),
 ) -> ApiResponse[list[dict[str, Any]]]:
-    traces = trace_store.list_traces(limit=limit, session_id=session_id, status=status)
-    data = [_trace_list_item(trace) for trace in traces]
+    data = trace_store.list_trace_summaries(limit=limit, session_id=session_id, status=status)
     return success_response(data=data, trace_id=request.state.trace_id)
+
+
+@router.get("/health", response_model=ApiResponse[dict[str, Any]])
+async def get_trace_health(
+    request: Request,
+    trace_store: TraceStore = Depends(get_trace_store),
+) -> ApiResponse[dict[str, Any]]:
+    return success_response(
+        data=trace_store.health_status(),
+        trace_id=request.state.trace_id,
+    )
 
 
 @router.get("/{trace_id}", response_model=ApiResponse[dict[str, Any]])

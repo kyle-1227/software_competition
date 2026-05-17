@@ -76,6 +76,22 @@ def test_list_traces_api(tmp_path) -> None:
     assert body["success"] is True
     assert body["data"][0]["trace_id"] == trace_id
     assert body["data"][0]["span_count"] == 1
+    assert body["data"][0]["error_count"] == 0
+    assert body["data"][0]["slowest_span_name"] == "node.orchestrator"
+
+
+def test_get_trace_health_api(tmp_path) -> None:
+    store = TraceStore(storage_path=tmp_path)
+
+    with _client_with_trace_store(store) as client:
+        response = client.get("/api/traces/health")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["success"] is True
+    assert body["data"]["backend"] == "jsonl"
+    assert body["data"]["database_url_configured"] is False
+    assert "postgresql://" not in json.dumps(body, ensure_ascii=False)
 
 
 def test_get_trace_spans_tree_and_analytics_api(tmp_path) -> None:
