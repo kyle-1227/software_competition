@@ -83,6 +83,8 @@ class TraceRepository(Protocol):
         status: str | None = None,
     ) -> list[dict[str, Any]]: ...
 
+    def delete_traces(self, trace_ids: list[str], batch_size: int = 500) -> int: ...
+
 
 class JsonlTraceRepository:
     def __init__(
@@ -246,6 +248,10 @@ class JsonlTraceRepository:
             database_url_configured=False,
             capture_mode=resolve_capture_mode(),
         )
+
+    def delete_traces(self, trace_ids: list[str], batch_size: int = 500) -> int:
+        del trace_ids, batch_size
+        raise NotImplementedError("JSONL trace cleanup rewrites traces.jsonl via cleanup service")
 
     def _record_success(self) -> None:
         self.last_success_at = datetime.now(timezone.utc)
@@ -463,7 +469,7 @@ class PostgreSQLTraceRepository:
             clauses.append("status = %s")
             params.append(_normalize_trace_status_value(status))
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        params.append(max(1, min(int(limit or 50), 200)))
+        params.append(max(1, min(int(limit or 50), 1000)))
         with self._connect() as conn:
             with conn.cursor(row_factory=self._dict_row()) as cur:
                 cur.execute(
@@ -556,6 +562,28 @@ class PostgreSQLTraceRepository:
                     (trace_id,),
                 )
                 return [_span_from_row(row) for row in cur.fetchall()]
+
+    def delete_traces(self, trace_ids: list[str], batch_size: int = 500) -> int:
+        trace_ids = [str(trace_id) for trace_id in trace_ids if trace_id]
+        if not trace_ids:
+            return 0
+        deleted = 0
+        batch_size = max(1, min(int(batch_size or 500), 1000))
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    for index in range(0, len(trace_ids), batch_size):
+                        batch = trace_ids[index : index + batch_size]
+                        cur.execute(
+                            "DELETE FROM agent_traces WHERE trace_id = ANY(%s)",
+                            (batch,),
+                        )
+                        deleted += int(cur.rowcount or 0)
+            self._record_success()
+            return deleted
+        except Exception as exc:
+            self._record_error(exc)
+            raise
 
     def healthcheck(self) -> bool:
         try:

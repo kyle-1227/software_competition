@@ -24,4 +24,9 @@ data/indexes/*
 !data/indexes/manual_keyword_index.json
 data/uploads/*
 !data/uploads/.gitkeep
+evals/reports/*.json
+evals/reports/*.jsonl
+evals/reports/*.md
+evals/datasets/trace_regression_cases.jsonl
+.gitkeep
 
