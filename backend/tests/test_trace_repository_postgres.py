@@ -8,6 +8,7 @@ import pytest
 
 from app.core.config import settings
 from app.schemas.trace import SpanKind, Trace, TraceSpan, TraceStatus
+from app.services.tracing.migrations import TRACE_MIGRATIONS
 from app.services.tracing.repository import PostgreSQLTraceRepository
 
 
@@ -71,6 +72,77 @@ def test_postgres_repository_minimal_question_preview_is_null(monkeypatch) -> No
     assert loaded.question_preview is None
     assert loaded.question_length == len(trace.question)
     assert summaries[0]["question_preview"] is None
+
+
+def test_postgres_repository_migrations_are_recorded_and_idempotent() -> None:
+    database_url = os.environ.get("TRACE_DATABASE_URL") or os.environ["DATABASE_URL"]
+    repository = PostgreSQLTraceRepository(database_url)
+    repository.initialize()
+    repository.initialize()
+
+    with repository._connect() as conn:
+        with conn.cursor(row_factory=repository._dict_row()) as cur:
+            cur.execute("SELECT version, name, checksum FROM trace_schema_migrations ORDER BY version")
+            rows = list(cur.fetchall())
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'agent_traces'
+                  AND column_name IN ('question_hash', 'question_preview', 'question_length')
+                """
+            )
+            question_columns = {row["column_name"] for row in cur.fetchall()}
+
+    records = {row["version"]: row for row in rows}
+    expected = {migration.version: migration for migration in TRACE_MIGRATIONS}
+    assert set(records) == set(expected)
+    for version, migration in expected.items():
+        assert records[version]["name"] == migration.name
+        assert records[version]["checksum"] == migration.checksum
+    assert question_columns == {"question_hash", "question_preview", "question_length"}
+
+
+def test_postgres_repository_status_constraints_reject_invalid_values() -> None:
+    database_url = os.environ.get("TRACE_DATABASE_URL") or os.environ["DATABASE_URL"]
+    repository = PostgreSQLTraceRepository(database_url)
+    repository.initialize()
+    trace = _trace()
+    repository.save_trace(trace)
+
+    with repository._connect() as conn:
+        with conn.cursor() as cur:
+            with pytest.raises(Exception):
+                cur.execute(
+                    """
+                    INSERT INTO agent_traces(trace_id, session_id, question, status, created_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        f"invalid-status-{uuid4().hex}",
+                        "session",
+                        "question",
+                        "invalid",
+                        datetime.now(timezone.utc),
+                    ),
+                )
+            with pytest.raises(Exception):
+                cur.execute(
+                    """
+                    INSERT INTO agent_trace_spans(
+                        span_id, trace_id, name, kind, status, start_time
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        f"invalid-span-{uuid4().hex}",
+                        trace.trace_id,
+                        "node.invalid",
+                        "node",
+                        "invalid",
+                        datetime.now(timezone.utc),
+                    ),
+                )
 
 
 def _trace() -> Trace:

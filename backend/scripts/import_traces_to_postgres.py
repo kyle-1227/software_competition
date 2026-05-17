@@ -1,66 +1,292 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import json
+import sys
+from dataclasses import asdict, dataclass
+from hashlib import sha256
 from pathlib import Path
+from typing import Any, Callable, TextIO
 
-from app.core.config import settings
-from app.services.tracing.reader import iter_traces_from_jsonl
-from app.services.tracing.repository import PostgreSQLTraceRepository
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+from pydantic import ValidationError  # noqa: E402
+
+from app.core.config import settings  # noqa: E402
+from app.schemas.trace import Trace, TraceSpan  # noqa: E402
+from app.services.tracing.persistence import question_persistence_fields  # noqa: E402
+from app.services.tracing.repository import PostgreSQLTraceRepository  # noqa: E402
+from app.services.tracing.serializers import redact_trace_text  # noqa: E402
+
+
+@dataclass
+class ImportOptions:
+    file: Path
+    database_url: str | None = None
+    apply: bool = False
+    limit: int | None = None
+    trace_id: str | None = None
+    fail_fast: bool = False
+    skip_existing: bool = False
+    verbose: bool = False
+
+
+@dataclass
+class ImportStats:
+    lines_seen: int = 0
+    valid_traces: int = 0
+    would_import: int = 0
+    imported: int = 0
+    failed: int = 0
+    skipped: int = 0
+    dry_run: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+RepositoryFactory = Callable[[str], Any]
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Import JSONL traces into PostgreSQL.")
-    parser.add_argument("--trace-file", type=Path, default=_default_trace_file())
+    parser.add_argument("--file", "--trace-file", dest="file", type=Path, default=_default_trace_file())
     parser.add_argument(
         "--database-url",
         default=getattr(settings, "trace_database_url", None)
         or getattr(settings, "database_url", None),
     )
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--limit", type=int)
+    parser.add_argument("--trace-id")
+    parser.add_argument("--fail-fast", action="store_true")
+    parser.add_argument("--skip-existing", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
-    if not args.database_url:
-        print("PostgreSQL database URL is required.")
-        return 1
+    options = ImportOptions(
+        file=args.file,
+        database_url=args.database_url,
+        apply=args.apply,
+        limit=args.limit,
+        trace_id=args.trace_id,
+        fail_fast=args.fail_fast,
+        skip_existing=args.skip_existing,
+        verbose=args.verbose,
+    )
+    stats = import_traces(options, stderr=sys.stderr)
+    print(json.dumps(stats.to_dict(), ensure_ascii=False))
+    return 1 if stats.failed else 0
 
-    repository = PostgreSQLTraceRepository(args.database_url)
-    repository.initialize()
-    scanned = 0
-    imported = 0
-    failed = 0
-    for trace in iter_traces_from_jsonl(args.trace_file):
-        scanned += 1
+
+def import_traces(
+    options: ImportOptions,
+    *,
+    repository_factory: RepositoryFactory = PostgreSQLTraceRepository,
+    stderr: TextIO | None = None,
+) -> ImportStats:
+    stats = ImportStats(dry_run=not options.apply)
+    trace_file = Path(options.file)
+    if not trace_file.exists():
+        stats.failed += 1
+        _warn(stderr, "trace_file_missing", file=str(trace_file))
+        return stats
+
+    repository = None
+    if options.apply:
+        if not options.database_url:
+            stats.failed += 1
+            _warn(stderr, "database_url_required")
+            return stats
         try:
-            if args.apply:
-                repository.save_trace(trace)
-                for span in _walk_spans(trace.root_span):
-                    if span is trace.root_span:
+            repository = repository_factory(str(options.database_url))
+            repository.initialize()
+        except Exception as exc:
+            stats.failed += 1
+            _warn(stderr, "repository_initialize_failed", error=exc)
+            return stats
+
+    processed_eligible = 0
+    with trace_file.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stats.lines_seen += 1
+            if not line.strip():
+                stats.skipped += 1
+                continue
+
+            raw: dict[str, Any] | None = None
+            trace: Trace | None = None
+            try:
+                raw = json.loads(line)
+                if not isinstance(raw, dict):
+                    raise ValueError("trace JSONL row must be an object")
+                normalized = normalize_trace_payload_for_import(raw)
+                trace = Trace.model_validate(normalized)
+                stats.valid_traces += 1
+            except Exception as exc:
+                stats.failed += 1
+                _warn(stderr, "trace_parse_failed", line_number=line_number, raw=raw, error=exc, verbose=options.verbose)
+                if options.fail_fast:
+                    break
+                continue
+
+            if options.trace_id and trace.trace_id != options.trace_id:
+                stats.skipped += 1
+                continue
+
+            if options.limit is not None and processed_eligible >= max(0, options.limit):
+                stats.skipped += 1
+                continue
+
+            if repository is not None and options.skip_existing:
+                try:
+                    if repository.get_trace(trace.trace_id) is not None:
+                        stats.skipped += 1
                         continue
+                except Exception as exc:
+                    stats.failed += 1
+                    _warn(stderr, "trace_existing_check_failed", line_number=line_number, trace=trace, error=exc, verbose=options.verbose)
+                    if options.fail_fast:
+                        break
+                    continue
+
+            processed_eligible += 1
+            stats.would_import += 1
+
+            if repository is None:
+                continue
+
+            try:
+                repository.save_trace(trace)
+                for span in iter_import_spans(trace):
                     repository.save_span(trace.trace_id, span)
                 repository.close_trace(trace)
-                imported += 1
-        except Exception:
-            failed += 1
-    mode = "imported" if args.apply else "validated"
-    print(
-        f"{mode} traces: scanned={scanned} valid={scanned} "
-        f"imported={imported} skipped={scanned - imported if not args.apply else 0} "
-        f"failed={failed}"
-    )
-    return 0
+                stats.imported += 1
+            except Exception as exc:
+                stats.failed += 1
+                _warn(stderr, "trace_import_failed", line_number=line_number, trace=trace, error=exc, verbose=options.verbose)
+                if options.fail_fast:
+                    break
+                continue
+    return stats
 
 
-def _walk_spans(span):
+def normalize_trace_payload_for_import(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = copy.deepcopy(payload)
+    trace_id = str(normalized.get("trace_id") or "")
+    root = normalized.get("root_span")
+    if isinstance(root, dict):
+        root_parent_id = str(root.get("span_id") or f"{trace_id}:root")
+        _normalize_child_spans(
+            root.get("children") if isinstance(root.get("children"), list) else [],
+            trace_id=trace_id,
+            parent_span_id=root_parent_id,
+            path="root",
+        )
+    return normalized
+
+
+def iter_import_spans(trace: Trace):
+    for index, child in enumerate(getattr(trace.root_span, "children", []) or []):
+        yield from _walk_import_spans(child, f"root.{index}")
+
+
+def _walk_import_spans(span: TraceSpan, path: str):
+    del path
     yield span
-    for child in getattr(span, "children", []) or []:
-        yield from _walk_spans(child)
+    for index, child in enumerate(getattr(span, "children", []) or []):
+        yield from _walk_import_spans(child, f"{span.span_id}.{index}")
+
+
+def _normalize_child_spans(
+    children: list[Any],
+    *,
+    trace_id: str,
+    parent_span_id: str,
+    path: str,
+) -> None:
+    for index, child in enumerate(children):
+        if not isinstance(child, dict):
+            continue
+        child_path = f"{path}.{index}"
+        if not child.get("span_id"):
+            child["span_id"] = _deterministic_span_id(trace_id, child_path, child, index)
+        child["trace_id"] = trace_id
+        child["parent_span_id"] = parent_span_id
+        nested = child.get("children")
+        if isinstance(nested, list):
+            _normalize_child_spans(
+                nested,
+                trace_id=trace_id,
+                parent_span_id=str(child["span_id"]),
+                path=child_path,
+            )
+
+
+def _deterministic_span_id(
+    trace_id: str,
+    path: str,
+    span: dict[str, Any],
+    sibling_index: int,
+) -> str:
+    material = "|".join(
+        (
+            trace_id,
+            path,
+            str(span.get("name") or ""),
+            str(span.get("start_time") or ""),
+            str(sibling_index),
+        )
+    )
+    return sha256(material.encode("utf-8")).hexdigest()[:32]
+
+
+def _warn(
+    stderr: TextIO | None,
+    event: str,
+    *,
+    line_number: int | None = None,
+    raw: dict[str, Any] | None = None,
+    trace: Trace | None = None,
+    error: Exception | None = None,
+    file: str | None = None,
+    verbose: bool = False,
+) -> None:
+    if stderr is None:
+        return
+    payload: dict[str, Any] = {"event": event}
+    if line_number is not None:
+        payload["line_number"] = line_number
+    if file is not None:
+        payload["file"] = file
+    trace_id = getattr(trace, "trace_id", None) or (raw.get("trace_id") if isinstance(raw, dict) else None)
+    if trace_id:
+        payload["trace_id"] = str(trace_id)
+    question = getattr(trace, "question", None)
+    if question is None and isinstance(raw, dict):
+        question = raw.get("question")
+    question_fields = question_persistence_fields(str(question or ""), "summary")
+    if question_fields.get("question_hash"):
+        payload["question_hash"] = question_fields["question_hash"]
+    if verbose and question_fields.get("question_preview"):
+        payload["question_preview"] = question_fields["question_preview"]
+    if error is not None:
+        payload["error_type"] = error.__class__.__name__
+        payload["error_summary"] = _safe_error_summary(error)
+    stderr.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _safe_error_summary(error: Exception) -> str:
+    if isinstance(error, ValidationError):
+        return "trace payload validation failed"
+    return redact_trace_text(str(error or error.__class__.__name__))[:500]
 
 
 def _default_trace_file() -> Path:
-    storage = Path(getattr(settings, "trace_storage_path", "../data/traces"))
-    if not storage.is_absolute():
-        storage = Path(__file__).resolve().parents[2] / storage
-    return storage / "traces.jsonl"
+    return Path(__file__).resolve().parents[2] / "data" / "traces" / "traces.jsonl"
 
 
 if __name__ == "__main__":
