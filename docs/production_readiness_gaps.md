@@ -29,7 +29,125 @@
 - Acceptance criteria:
 ```
 
-## Trace Layer
+## Execution Layers
+
+### GAP-RUNTIME-001: Runtime Contract 与 State Machine 尚未统一
+
+- Layer: Runtime
+- Priority: P0
+- Status: open
+- Owner: 同学 A
+- Current state: `AgentHarness` 直接从 `QueryRequest` 构造 dict state，并调用 LangGraph `ainvoke()`；Step 生命周期、取消、超时、max steps 和最终结果适配分散在 harness、graph node 和 API schema 之间。
+- Production target: 引入 `RuntimeStateFactory`、`RuntimeExecutor`、`RuntimeResultAdapter` 和统一 `RuntimeResult`，由 Runtime 层负责执行生命周期、超时、取消、错误归一化和结果适配。
+- Risk: API 层、Workflow 层和 Trace 层继续耦合，后续扩展 Tool、Memory、Sandbox 时容易出现字段漂移和不可回放执行。
+- Required work:
+  - 定义标准 runtime id / trace id / session id / request metadata。
+  - 定义 Step 状态：pending、running、success、error、degraded、cancelled。
+  - 将 max steps、timeout、cancel、exception mapping 收敛到 `RuntimeExecutor`。
+  - 将 `QueryResponse` 构造移动到 `RuntimeResultAdapter`。
+- Acceptance criteria:
+  - API 层只接收 `RuntimeResult` 并适配响应，不读取 graph 临时字段。
+  - 超时、取消、异常、degraded 都能进入 RuntimeResult 和 Trace。
+  - 测试覆盖 success、timeout、cancelled、max steps exceeded、node error。
+
+### GAP-WORKFLOW-001: Workflow 输出契约仍未完全从 QueryResponse 解耦
+
+- Layer: Planner / Orchestrator / Workflow
+- Priority: P0
+- Status: open
+- Owner: 同学 A
+- Current state: LangGraph 已拆成 intake、guardrail、memory、orchestrator、worker、loop、eval、trace、memory_save、finalize 等节点，但 `finalize_node` 仍直接拼装面向 API 的 response dict。
+- Production target: Graph 只输出 `RuntimeResult`，节点只负责局部 state update 和 RuntimeEvent，API response 由 adapter 生成。
+- Risk: 节点内部容易混入 API 展示字段，导致 Workflow 难以复用到 CLI、batch eval、SSE replay 或离线回放。
+- Required work:
+  - 明确每个节点的输入字段、输出字段和错误语义。
+  - 将 `finalize_node` 从 API response builder 改成 runtime finalizer。
+  - 将 retry、approval、clarification、fail-safe 的路径输出统一为 RuntimeResult outcome。
+  - 保持 graph 拓扑固定，只允许节点内部局部自适应。
+- Acceptance criteria:
+  - 同一个 graph 结果可被 API、CLI、eval runner 复用。
+  - Workflow 测试覆盖所有条件分支。
+  - Trace timeline 能稳定展示每个节点的进入、退出、失败和降级原因。
+
+### GAP-TOOL-001: Tool / Worker / Policy 缺少统一生产调用规范
+
+- Layer: ToolBroker / Tool Runtime / Worker / Policy
+- Priority: P0
+- Status: open
+- Owner: 同学 B
+- Current state: `ToolRegistry` 已有 `ToolResult`，Agent Loop 已有 retry 和 degraded 基础能力；但 timeout、approval、audit、side-effect、ToolPolicy 与 Worker 输出尚未形成统一契约。
+- Production target: 工具和 worker 都通过统一 policy 调用，输出封装为 `ToolResult` / `RuntimeEvent`，并完整进入 Trace、Metrics 和 Eval。
+- Risk: 高风险工具可能绕过审批；不同 worker 的错误和降级字段不一致；工具副作用难以审计。
+- Required work:
+  - 定义 `ToolPolicy`：timeout、retry、approval、audit、side-effect、allowed environments。
+  - 扩展 `ToolResult` 或新增 `RuntimeEvent` 字段：attempt、retry_count、fallback_used、degraded、side_effect、policy_decision。
+  - 统一 WorkerDispatcher 和 ToolRegistry 的错误处理。
+  - 将 tool policy outcome 写入 span metadata 和 metrics。
+- Acceptance criteria:
+  - 任一工具失败都能区分 transient、policy blocked、timeout、degraded。
+  - 高风险工具调用必须进入 approval 或 fail-safe。
+  - Metrics 可统计 tool success rate、timeout rate、retry count、degraded rate。
+
+### GAP-MEMORY-001: Memory 仍是进程内窗口，缺少生产持久化与评估
+
+- Layer: Memory
+- Priority: P1
+- Status: open
+- Owner: 同学 B
+- Current state: `MemoryStore` 使用进程内 dict 保存 session history，并在窗口达到阈值时做 fallback summary；重启后记忆丢失，缺少 retrieval、eval、fallback 和 low confidence 写入策略。
+- Production target: Memory 层支持 PostgreSQL / Vector DB 持久化、CRUD、retrieval、summary、eval feedback、fallback 和低置信度策略。
+- Risk: 多实例部署无法共享上下文；错误答案可能进入长期记忆；低置信度和 degraded memory retrieval 无法追踪。
+- Required work:
+  - 设计 session memory 表和可选向量索引。
+  - 定义写入策略：完整内容、摘要、脱敏字段、禁止写入字段。
+  - 增加 memory retrieval span、fallback span、low confidence marker。
+  - 接入 eval dataset，评估 memory 命中与错误引用。
+- Acceptance criteria:
+  - 进程重启后 session memory 可恢复。
+  - 低置信度、fallback、degraded 回答不会静默写入长期记忆。
+  - Memory retrieval miss / hit / degraded 能在 Trace 和 Metrics 中查看。
+
+### GAP-SANDBOX-001: Sandbox 仍是演示级受限执行器
+
+- Layer: Sandbox
+- Priority: P0
+- Status: open
+- Owner: 同学 B
+- Current state: `SandboxExecutor` 通过 AST 检查、危险词、临时目录、超时和只读 SQL 降低风险；代码注释已明确它不是强隔离沙箱。
+- Production target: Sandbox 层支持 Local / Docker / Remote 后端插件化，并与 `ToolPolicy` / Runtime 集成，具备资源限制、网络限制、文件系统限制、审计和可观测指标。
+- Risk: 演示级限制不能承诺生产隔离；Python 子进程和 SQLite 执行缺少容器边界；副作用治理依赖静态检查。
+- Required work:
+  - 定义 `SandboxBackend` 接口和执行结果 schema。
+  - 增加 Docker / Remote backend，限制 CPU、内存、网络、文件系统和执行时长。
+  - 将 sandbox policy decision 写入 Trace 和 Metrics。
+  - 增加 blocked、timeout、execution error、degraded 测试。
+- Acceptance criteria:
+  - Shell 默认拒绝，Python / SQL 受后端和 policy 双层限制。
+  - 生产后端能阻断越权文件、网络和长时间执行。
+  - Sandbox 失败不会导致 Agent 编造结果，而是进入 approval、clarification 或 fail-safe。
+
+### GAP-API-CLI-001: API / CLI / Dependency 边界还需生产化收敛
+
+- Layer: API / CLI / Dependency
+- Priority: P1
+- Status: open
+- Owner: 同学 A
+- Current state: FastAPI、SSE、Trace API 和导出 CLI 已可用，但 CLI、API adapter、dependency injection 和生产配置边界还未完全与 Runtime Contract 对齐。
+- Production target: API 保持 RESTful / SSE / Metrics 支持，CLI wrapper 只做参数解析和结果输出，依赖注入统一装配 Runtime、Tool、Memory、Sandbox、Trace。
+- Risk: API 与 CLI 可能分别走不同执行路径；部署配置分散；生产环境依赖替换成本高。
+- Required work:
+  - 将 API、SSE、CLI 统一接入 `RuntimeExecutor`。
+  - 梳理依赖注入入口，明确 singleton / request scoped service。
+  - 为生产环境配置增加 startup validation。
+  - 保持 CLI wrapper 瘦身，不承载业务逻辑。
+- Acceptance criteria:
+  - API、SSE、CLI 对同一请求生成一致 RuntimeResult。
+  - 生产必需配置缺失时启动失败或清晰 degraded。
+  - 测试覆盖 API 与 CLI 的执行路径一致性。
+
+## Trace / Observability / Metrics / Eval Layer
+
+Trace / Observability / Metrics / Eval 已具备生产级基础：当前系统支持 span、summary、timeline、tree、analytics、metrics、eval dataset、retention 和 cleanup。以下条目记录的是继续增强项，重点是高并发写入、访问控制、数据生命周期、安全审计和 eval 回流。
 
 ### GAP-TRACE-001: Span 写入仍为同步逐条写入
 
@@ -167,18 +285,14 @@
   - 人工确认后进入固定回归集。
   - 回归集能在 CI 中稳定运行。
 
-## Future Layers
+## 后续追加分区
 
-后续发现其他架构层生产级缺口时，按以下分区追加：
+后续发现其他架构层生产级缺口时，按以下分区继续追加：
 
-- Memory Layer
 - RAG / Ingestion Layer
-- ToolBroker / Tool Runtime Layer
-- Sandbox Layer
 - Guardrail / Policy Layer
-- Planner / Orchestrator Layer
-- Eval Layer
 - API / Auth / Tenant Layer
 - Frontend Observability Layer
+- Operational Dashboard / Alerting Layer
 
 每个新增条目必须使用本文档的记录模板，并尽量关联到具体文件、测试和验收标准。

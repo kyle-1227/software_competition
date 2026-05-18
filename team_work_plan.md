@@ -31,6 +31,25 @@
 | 数据知识库与模型 | 同学 B | PDF 解析、分块、索引、检索、模型接入、知识图谱、评测集 | `data/` `backend/app/services/manual_indexer.py` `backend/app/services/retriever.py` |
 | 前端与文档 | 同学 C | 页面、交互、接口联调、需求/设计/测试/部署文档、PPT、演示视频 | `frontend/` `docs/` `README.md` |
 
+## 3.1 生产级 Agent 优化分工
+
+当前主线从比赛 MVP 进入生产级 Agent 演进，Commit 8 到 Commit 13 的职责按以下方式分配：
+
+| 阶段 | 目标 | 同学 A：后端与 Agent | 同学 B：数据知识库与模型 | 同学 C：前端与文档 |
+|---|---|---|---|---|
+| Commit 8 | Runtime Contract + Execution State Machine | 负责 `RuntimeStateFactory`、`RuntimeExecutor`、`RuntimeResultAdapter` 设计；接入取消、超时、max steps 和错误归一化 | 配合确认 retrieval、memory、sandbox 对 Runtime 的输入输出需求 | 更新 README、架构说明和演示脚本 |
+| Commit 9 | Workflow 节点拆分 + RuntimeResult 输出 | 收敛 LangGraph 节点职责；让 graph 输出 `RuntimeResult`；补 Workflow 分支测试 | 对齐 evidence、tool、memory 字段，避免 worker 输出漂移 | 更新架构图、Trace 展示说明和文档截图 |
+| Commit 10 | Tool / Worker / Policy 完整化 | 统一 ToolRegistry、WorkerDispatcher、policy adapter 和异常处理 | 负责 `ToolPolicy`、工具评测数据、retry / degraded / side-effect 策略 | 展示工具调用、审批、审计和 degraded 状态 |
+| Commit 11 | Memory 持久化 + Retrieval + Fallback | Memory API 与 Runtime 集成；补 session、fallback、low confidence 测试 | 负责 PostgreSQL / Vector DB 方案、retrieval、eval、低置信度写入策略 | 更新产品说明、记忆能力说明和测试用例 |
+| Commit 12 | Sandbox 安全隔离与后端插件化 | 定义 `SandboxBackend` 接口；接入 ToolPolicy、Runtime 和 API 错误处理 | 负责 Docker / Remote backend、资源限制、网络限制、沙箱评测 | 更新安全执行说明、风险边界和演示素材 |
+| Commit 13 | E2E 测试 + Operational Metrics / Eval Feedback Loop | 负责端到端测试、Metrics 接口、CI 回归 | 负责 Eval regression dataset、失败归因、评测报告 | 负责 Operational dashboard、提交文档、PPT 和视频 |
+
+执行原则：
+
+1. Runtime / Workflow 优先，Tool、Memory、Sandbox 都必须向 Runtime Contract 对齐。
+2. 所有 fallback、degraded、low confidence、approval、fail-safe 都必须进入 Trace 和 Metrics。
+3. Trace / Eval / Metrics / Retention / Cleanup 已具备生产级基础，但访问控制、异步写入、dashboard 和 alerting 继续作为增强项推进。
+
 ## 4. 文件所有权
 
 ### 4.1 后端与 Agent 同学 A

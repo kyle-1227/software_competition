@@ -1,22 +1,41 @@
 # 设备检修智能辅助系统
 
-本仓库是一个面向比赛场景的设备检修知识检索与作业辅助系统项目骨架，包含 FastAPI 后端和 Vite + React 前端。
+本仓库是一个面向比赛场景的设备检修知识检索、Agent 作业辅助与 Trace 可观测系统，包含 FastAPI 后端和 Vite + React 前端。
 
 ## 当前状态
 
-项目目前已经具备一版可演示的基础界面和后端接口骨架：
+项目目前已经从早期接口骨架推进到可演示的 Agent Harness：
 
 - 后端基于 FastAPI，提供统一 API 前缀和统一响应结构。
-- 已预留手册注册、故障查询、证据返回和 Agent 执行流程接口。
+- `/api/query` 已接入 LangGraph Workflow、Agent Loop、Worker Dispatch、Evaluator、Guardrail、Trace 和 Memory。
+- ToolRegistry 已提供 `manual_lookup`、`ai_coding`、`compliance_check` 等工具入口。
+- Trace API 已支持 summary、timeline、spans、tree、analytics、metrics 和导出能力。
 - 前端已改造成参考 Claude 网页版体验的三栏工作台。
 - 前端包含左侧导航/历史、中间对话区、底部输入框和右侧 Artifact 工作区。
 - 右侧工作区提供 SOP、证据、记录三个视图，适合展示维修指导和检索来源。
 
-当前业务能力仍是演示阶段：
+当前仍需重点生产级优化的层：
 
-- 手册注册目前主要校验文件路径。
-- 检索模块返回占位证据。
-- Agent 返回的诊断答案和计划步骤仍是占位内容。
+- Runtime Contract / State Machine 仍缺统一的 Step 生命周期、取消、超时、max steps 和 `RuntimeResult` 契约。
+- Workflow 节点已拆到 LangGraph，但 graph 输出仍需要从 QueryResponse 构造逻辑中进一步解耦。
+- Tool / Worker / Policy 已有 retry、degraded、fallback 基础能力，但审批、审计、side-effect policy 还需要统一。
+- Memory 当前是进程内 session 摘要，尚未升级到 PostgreSQL / Vector DB 持久化和低置信度策略。
+- Sandbox 当前是比赛演示级受限执行器，生产环境需要 Docker / Remote / 专用沙箱后端隔离。
+
+## 生产级 Agent 当前完成度
+
+已具备生产级基础的观察与评估层：
+
+- Trace：支持 PostgreSQL / JSONL fallback、span、summary、timeline、tree、analytics、export。
+- Eval：支持 trace 转 eval case、grader registry、失败分析和回归入口。
+- Metrics：支持 degraded、fallback、cancelled、confidence、evidence 等统计信号。
+- Retention / Cleanup：已有 trace retention policy、cleanup 脚本和相关测试。
+
+仍在演进中的执行层：
+
+- Runtime / Workflow / Tool / Memory / Sandbox 是下一阶段主线。
+- 详细缺口登记见 [`docs/production_readiness_gaps.md`](docs/production_readiness_gaps.md)。
+- 生产级演进路线见 [`docs/production_agent_evolution_plan.md`](docs/production_agent_evolution_plan.md)。
 
 ## 仓库结构
 
@@ -73,7 +92,7 @@ npm run dev -- --open
 - 右侧：类似 Artifact 的维修工作区，可切换 SOP、证据和记录。
 - 响应式：宽屏三栏展示，中等屏幕收起侧边栏文字，小屏幕纵向排列。
 
-页面当前是静态演示原型，主要用于比赛展示和后续接口联调。
+页面当前以比赛展示和接口联调为主，后续重点是接入更完整的 Trace 展示、运行状态和生产级告警视图。
 
 ## 后端启动
 
@@ -151,7 +170,20 @@ Safety boundary: these outputs do not include full prompts, answers, scripts, la
 
 ## Production Readiness Gaps
 
-Open production gaps are tracked in [`docs/production_readiness_gaps.md`](docs/production_readiness_gaps.md). Trace gaps are recorded there first, and future gaps for Memory, RAG, ToolBroker, Sandbox, Guardrail, Eval, API, and Frontend should be added to the same document.
+Open production gaps are tracked in [`docs/production_readiness_gaps.md`](docs/production_readiness_gaps.md). Current priority is Runtime / Workflow / Tool / Memory / Sandbox. Trace / Observability / Metrics / Eval already have a production-ready foundation, but still need access control, async span writing, alerting, and operational dashboards.
+
+## Production Agent Evolution
+
+下一阶段采用“固定 workflow + 局部自适应”的生产级 Agent 路线：
+
+1. Commit 8：Runtime Contract + Execution State Machine。
+2. Commit 9：Workflow 节点拆分 + `RuntimeResult` 输出。
+3. Commit 10：Tool / Worker / Policy 完整化。
+4. Commit 11：Memory 持久化 + Retrieval + Fallback。
+5. Commit 12：Sandbox 安全隔离与后端插件化。
+6. Commit 13：End-to-End 测试 + Operational Metrics / Eval Feedback Loop。
+
+详细计划见 [`docs/production_agent_evolution_plan.md`](docs/production_agent_evolution_plan.md)。
 
 ## Trace Export & API
 
@@ -191,8 +223,8 @@ The raw export is sanitized before output and follows the same safety boundary a
 
 ## 下一步目标
 
-1. 将真实 PDF 解析接入 `ManualIndexer`。
-2. 建立按页分块和可检索索引。
-3. 用真实检索结果替换 `Retriever` 的占位证据。
-4. 用真实诊断流程替换 `AgentHarness` 的占位回答。
-5. 将前端静态演示数据接入后端查询和证据接口。
+1. 建立统一 `RuntimeStateFactory`、`RuntimeExecutor`、`RuntimeResultAdapter` 契约。
+2. 将 LangGraph 输出改为统一 `RuntimeResult`，由 API 层适配为 `QueryResponse`。
+3. 统一 Tool / Worker / Policy 的 timeout、retry、approval、audit、side-effect 规范。
+4. 将 Memory 升级为可持久化、可检索、可评估、可降级的生产级层。
+5. 将 Sandbox 升级为 Local / Docker / Remote 可插拔后端，并接入 ToolPolicy 与 Runtime。
