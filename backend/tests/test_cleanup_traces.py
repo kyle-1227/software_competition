@@ -442,12 +442,32 @@ def test_cleanup_cli_auto_jsonl_without_db_url(tmp_path) -> None:
     assert code == 0
 
 
+def test_cleanup_postgres_missing_trace_for_archive_prevents_delete(tmp_path) -> None:
+    now = datetime.now(timezone.utc)
+    repo = _FakePostgresRepository([
+        _trace("old", closed_at=now - timedelta(days=60)),
+    ])
+    repo.missing_get_trace_ids = {"old"}
+
+    stats = cleanup_postgres_traces(
+        repo,
+        policy=TraceRetentionPolicy(keep_days=30),
+        apply=True,
+        archive_path=tmp_path / "archive.jsonl",
+    )
+
+    assert stats.fatal is True
+    assert stats.deleted == 0
+    assert repo.deleted_batches == []
+
+
 class _FakePostgresRepository:
     def __init__(self, traces):
         self.traces = {t.trace_id: t for t in traces}
         self.deleted_batches: list[int] = []
         self.archived: list[str] = []
         self.list_should_fail = False
+        self.missing_get_trace_ids: set[str] = set()
 
     def initialize(self) -> None:
         pass
@@ -468,6 +488,8 @@ class _FakePostgresRepository:
         return rows[:limit]
 
     def get_trace(self, trace_id):
+        if trace_id in self.missing_get_trace_ids:
+            return None
         return self.traces.get(trace_id)
 
     def delete_traces(self, trace_ids, batch_size=500):

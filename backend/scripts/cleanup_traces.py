@@ -70,8 +70,13 @@ def main(argv: list[str] | None = None) -> int:
             _warn(sys.stderr, "trace_cleanup_missing_database_url", ValueError("database_url required for postgres backend"))
             print(json.dumps(TraceCleanupStats(fatal=True).to_dict(), ensure_ascii=False))
             return 1
-        repository = PostgreSQLTraceRepository(str(database_url), configured_backend="postgres")
-        repository.initialize()
+        try:
+            repository = PostgreSQLTraceRepository(str(database_url), configured_backend="postgres")
+            repository.initialize()
+        except Exception as exc:
+            _warn(sys.stderr, "trace_cleanup_postgres_init_failed", exc)
+            print(json.dumps(TraceCleanupStats(fatal=True).to_dict(), ensure_ascii=False))
+            return 1
         stats = cleanup_postgres_traces(
             repository,
             policy=policy,

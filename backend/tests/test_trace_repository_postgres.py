@@ -184,12 +184,32 @@ def test_postgres_delete_traces_batch_deletes_and_cascades_spans() -> None:
 
     repository.save_trace(trace)
     repository.save_span(trace.trace_id, span)
+    trace.status = TraceStatus.SUCCESS
+    trace.closed_at = datetime.now(timezone.utc)
+    trace.total_duration_ms = 100
+    repository.close_trace(trace)
 
     deleted = repository.delete_traces([trace.trace_id], batch_size=1)
 
     assert deleted == 1
     assert repository.get_trace(trace.trace_id) is None
     assert repository.list_spans(trace.trace_id) == []
+
+
+def test_postgres_delete_traces_does_not_delete_open_trace() -> None:
+    database_url = os.environ.get("TRACE_DATABASE_URL") or os.environ["DATABASE_URL"]
+    repository = PostgreSQLTraceRepository(database_url)
+    repository.initialize()
+    trace = _trace()
+    span = trace.root_span.children[0]
+
+    repository.save_trace(trace)
+    repository.save_span(trace.trace_id, span)
+
+    deleted = repository.delete_traces([trace.trace_id], batch_size=1)
+
+    assert deleted == 0
+    assert repository.get_trace(trace.trace_id) is not None
 
 
 def test_postgres_cleanup_service_apply_deletes_candidates() -> None:
