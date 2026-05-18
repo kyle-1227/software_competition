@@ -26,21 +26,22 @@ def test_overview_counts_and_rates() -> None:
         _trace("c1", status="cancelled", closed_at=now),
         _trace("d1", status="success", closed_at=now, degraded=True),
         _trace("f1", status="success", closed_at=now, fallback_used=True),
+        _trace("su1", status="SUCCESS", closed_at=now),
     ]
 
     overview = build_trace_metrics_overview(traces, window_hours=24)
 
-    assert overview["total_traces"] == 7
-    assert overview["status_counts"] == {"success": 4, "error": 1, "running": 1, "cancelled": 1}
-    assert overview["success_count"] == 4
+    assert overview["total_traces"] == 8
+    assert overview["status_counts"] == {"success": 5, "error": 1, "running": 1, "cancelled": 1}
+    assert overview["success_count"] == 5
     assert overview["error_count"] == 1
     assert overview["running_count"] == 1
     assert overview["cancelled_count"] == 1
     assert overview["degraded_count"] == 1
     assert overview["fallback_count"] == 1
-    assert overview["failure_rate"] == round(1 / 7, 4)
-    assert overview["degraded_rate"] == round(1 / 7, 4)
-    assert overview["fallback_rate"] == round(1 / 7, 4)
+    assert overview["failure_rate"] == round(1 / 8, 4)
+    assert overview["degraded_rate"] == round(1 / 8, 4)
+    assert overview["fallback_rate"] == round(1 / 8, 4)
 
 
 def test_overview_empty_traces() -> None:
@@ -231,6 +232,30 @@ def test_clamp_metrics_params() -> None:
 
     r2 = load_recent_traces_for_metrics(store, window_hours=0, limit=0)
     assert len(r2.traces) == 0
+
+
+def test_latency_metrics_allows_zero_threshold() -> None:
+    now = datetime.now(timezone.utc)
+    traces = [_trace("t1", status="success", closed_at=now, duration_ms=100.0)]
+
+    metrics = build_trace_latency_metrics(traces, slow_threshold_ms=0)
+
+    assert metrics["slow_threshold_ms"] == 0
+    assert metrics["slow_trace_count"] == 1
+    assert metrics["slow_trace_rate"] == 1.0
+
+
+def test_overview_empty_evidence_count_uses_per_trace_flags() -> None:
+    now = datetime.now(timezone.utc)
+    traces = [
+        _trace("degraded", status="success", closed_at=now, degraded=True),
+        _trace("clean-empty", status="success", closed_at=now),
+    ]
+
+    overview = build_trace_metrics_overview(traces, window_hours=24)
+
+    assert overview["degraded_count"] == 1
+    assert overview["empty_evidence_count"] == 1
 
 
 def _trace(

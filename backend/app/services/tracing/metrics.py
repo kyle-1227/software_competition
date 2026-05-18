@@ -100,9 +100,11 @@ def build_trace_metrics_overview(
         if st in status_counts:
             status_counts[st] += 1
         analytics = build_trace_analytics(trace)
-        if analytics.get("degraded"):
+        trace_degraded = bool(analytics.get("degraded"))
+        trace_fallback = bool(analytics.get("fallback_used"))
+        if trace_degraded:
             degraded += 1
-        if analytics.get("fallback_used"):
+        if trace_fallback:
             fallback += 1
         ft = str(analytics.get("failure_type") or "")
         if ft == FailureType.TRACE_REPOSITORY_FAILURE.value:
@@ -115,7 +117,7 @@ def build_trace_metrics_overview(
             low_confidence += 1
         summary = build_trace_summary(trace)
         evidence_count = int((summary.get("retrieval") or {}).get("evidence_count") or 0)
-        if evidence_count == 0 and not (degraded or fallback):
+        if evidence_count == 0 and not (trace_degraded or trace_fallback):
             empty_evidence += 1
 
     return {
@@ -203,7 +205,7 @@ def build_trace_latency_metrics(
     *,
     slow_threshold_ms: int = 5000,
 ) -> dict[str, Any]:
-    threshold = max(0, int(slow_threshold_ms or 5000))
+    threshold = max(0, int(5000 if slow_threshold_ms is None else slow_threshold_ms))
     durations: list[float] = []
     for trace in traces:
         dur = trace.total_duration_ms
@@ -350,8 +352,8 @@ def build_trace_operational_metrics(
 
 def _norm_status(status: Any) -> str:
     if hasattr(status, "value"):
-        return str(status.value)
-    return str(status or "")
+        status = status.value
+    return str(status or "").lower()
 
 
 def _percentile(sorted_vals: list[float], p: float, n: int) -> float:
