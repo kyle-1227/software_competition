@@ -111,6 +111,70 @@ def select_cleanup_candidates(
     return candidates
 
 
+def cleanup_candidate_for_row(
+    row: dict[str, Any],
+    policy: TraceRetentionPolicy,
+    *,
+    eval_exported: bool = False,
+    now: datetime | None = None,
+) -> TraceCleanupCandidate | None:
+    now = now or datetime.now(timezone.utc)
+    status = str(row.get("status") or "")
+    closed_at_value = row.get("closed_at")
+    if status == "running" or closed_at_value is None:
+        return None
+    closed_at = _aware_from_value(closed_at_value)
+    degraded = bool(row.get("degraded"))
+    fallback_used = bool(row.get("fallback_used"))
+    reason: str | None = None
+    if eval_exported:
+        if _older_than(closed_at, now, policy.keep_eval_exported_days):
+            reason = REASON_EVAL_EXPORTED_OLD
+    elif degraded or fallback_used:
+        if _older_than(closed_at, now, policy.keep_degraded_days):
+            reason = REASON_DEGRADED_OLD
+    elif status == "error":
+        if _older_than(closed_at, now, policy.keep_error_days):
+            reason = REASON_ERROR_OLD
+    elif status == "success" and _older_than(closed_at, now, policy.keep_days):
+        reason = REASON_SUCCESS_OLD
+    if reason is None:
+        return None
+    return TraceCleanupCandidate(
+        trace_id=str(row["trace_id"]),
+        status=status,
+        closed_at=closed_at.isoformat(),
+        degraded=degraded,
+        fallback_used=fallback_used,
+        eval_exported=eval_exported,
+        reason=reason,
+    )
+
+
+def select_cleanup_candidates_from_rows(
+    rows: Iterable[dict[str, Any]],
+    policy: TraceRetentionPolicy,
+    *,
+    eval_exported_trace_ids: set[str] | None = None,
+    now: datetime | None = None,
+) -> list[TraceCleanupCandidate]:
+    now = now or datetime.now(timezone.utc)
+    eval_exported_trace_ids = eval_exported_trace_ids or set()
+    candidates: list[TraceCleanupCandidate] = []
+    for row in rows:
+        candidate = cleanup_candidate_for_row(
+            row,
+            policy,
+            eval_exported=str(row.get("trace_id") or "") in eval_exported_trace_ids,
+            now=now,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+        if len(candidates) >= max(0, policy.max_delete):
+            break
+    return candidates
+
+
 def cleanup_candidate_for_trace(
     trace: Trace,
     policy: TraceRetentionPolicy,
@@ -273,6 +337,76 @@ def cleanup_jsonl_traces(
     return stats
 
 
+def cleanup_postgres_traces(
+    repository: Any,
+    *,
+    policy: TraceRetentionPolicy,
+    eval_dataset_path: Path | None = None,
+    archive_path: Path | None = None,
+    apply: bool = False,
+    scan_limit: int | None = None,
+) -> TraceCleanupStats:
+    stats = TraceCleanupStats(dry_run=not apply)
+    eval_exported_trace_ids = load_eval_exported_trace_ids(eval_dataset_path)
+    limit = scan_limit or max(policy.max_delete * 5, 1000)
+
+    try:
+        rows = repository.list_trace_cleanup_rows(limit=limit)
+    except Exception:
+        stats.failed += 1
+        stats.fatal = True
+        return stats
+
+    candidates = select_cleanup_candidates_from_rows(
+        rows, policy, eval_exported_trace_ids=eval_exported_trace_ids
+    )
+    stats.candidates = len(candidates)
+    stats.would_delete = len(candidates)
+    if policy.archive_before_delete:
+        stats.would_archive = len(candidates)
+
+    if not apply:
+        if stats.candidates > 0 and policy.archive_before_delete:
+            stats.archive_path = str(archive_path or _default_archive_path())
+        return stats
+
+    if not candidates:
+        return stats
+
+    candidate_ids = [c.trace_id for c in candidates]
+
+    if policy.archive_before_delete:
+        archive_traces: list[Trace] = []
+        for trace_id in candidate_ids:
+            try:
+                trace = repository.get_trace(trace_id)
+            except Exception:
+                stats.failed += 1
+                stats.fatal = True
+                return stats
+            if trace is None:
+                stats.failed += 1
+                stats.fatal = True
+                return stats
+            archive_traces.append(trace)
+        archive = archive_path or _default_archive_path()
+        try:
+            _write_archive(archive_traces, archive)
+            stats.archived = len(archive_traces)
+        except Exception:
+            stats.failed += 1
+            stats.fatal = True
+            return stats
+        stats.archive_path = str(archive)
+
+    try:
+        stats.deleted = repository.delete_traces(candidate_ids, batch_size=policy.batch_size)
+    except Exception:
+        stats.failed += 1
+        stats.fatal = True
+    return stats
+
+
 def _write_archive(traces: list[Trace], archive_path: Path) -> None:
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     with archive_path.open("w", encoding="utf-8") as handle:
@@ -282,6 +416,15 @@ def _write_archive(traces: list[Trace], archive_path: Path) -> None:
 
 def _default_archive_path() -> Path:
     return Path(__file__).resolve().parents[2] / "data" / "exports" / f"trace_archive_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.jsonl"
+
+
+def _aware_from_value(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return _aware(value)
+    if isinstance(value, str):
+        parsed = datetime.fromisoformat(value)
+        return _aware(parsed)
+    raise ValueError(f"cannot parse datetime from {type(value).__name__}")
 
 
 def _older_than(closed_at: datetime, now: datetime, days: int) -> bool:

@@ -145,6 +145,80 @@ def test_postgres_repository_status_constraints_reject_invalid_values() -> None:
                 )
 
 
+def test_postgres_list_trace_cleanup_rows() -> None:
+    database_url = os.environ.get("TRACE_DATABASE_URL") or os.environ["DATABASE_URL"]
+    repository = PostgreSQLTraceRepository(database_url)
+    repository.initialize()
+    trace = _trace()
+    span = trace.root_span.children[0]
+    span.degraded = True
+    span.fallback_used = True
+
+    repository.save_trace(trace)
+    repository.save_span(trace.trace_id, span)
+    trace.status = TraceStatus.SUCCESS
+    trace.closed_at = datetime.now(timezone.utc)
+    trace.total_duration_ms = 100
+    repository.close_trace(trace)
+
+    rows = repository.list_trace_cleanup_rows(limit=100)
+
+    matching = [r for r in rows if r["trace_id"] == trace.trace_id]
+    assert matching
+    row = matching[0]
+    assert row["trace_id"] == trace.trace_id
+    assert row["status"] in ("success", "SUCCESS")
+    assert row["closed_at"] is not None
+    assert row["degraded"] is True
+    assert row["fallback_used"] is True
+    assert "question" not in row
+    assert "answer" not in row
+
+
+def test_postgres_delete_traces_batch_deletes_and_cascades_spans() -> None:
+    database_url = os.environ.get("TRACE_DATABASE_URL") or os.environ["DATABASE_URL"]
+    repository = PostgreSQLTraceRepository(database_url)
+    repository.initialize()
+    trace = _trace()
+    span = trace.root_span.children[0]
+
+    repository.save_trace(trace)
+    repository.save_span(trace.trace_id, span)
+
+    deleted = repository.delete_traces([trace.trace_id], batch_size=1)
+
+    assert deleted == 1
+    assert repository.get_trace(trace.trace_id) is None
+    assert repository.list_spans(trace.trace_id) == []
+
+
+def test_postgres_cleanup_service_apply_deletes_candidates() -> None:
+    from app.services.tracing.retention import TraceRetentionPolicy, cleanup_postgres_traces
+
+    database_url = os.environ.get("TRACE_DATABASE_URL") or os.environ["DATABASE_URL"]
+    repository = PostgreSQLTraceRepository(database_url)
+    repository.initialize()
+    trace = _trace()
+    span = trace.root_span.children[0]
+
+    repository.save_trace(trace)
+    repository.save_span(trace.trace_id, span)
+    trace.status = TraceStatus.SUCCESS
+    trace.closed_at = datetime.now(timezone.utc) - timedelta(days=60)
+    trace.total_duration_ms = 100
+    repository.close_trace(trace)
+
+    stats = cleanup_postgres_traces(
+        repository,
+        policy=TraceRetentionPolicy(keep_days=30, archive_before_delete=False),
+        apply=True,
+    )
+
+    assert stats.deleted == 1
+    assert repository.get_trace(trace.trace_id) is None
+    assert repository.list_spans(trace.trace_id) == []
+
+
 def _trace() -> Trace:
     started = datetime.now(timezone.utc)
     span = TraceSpan(

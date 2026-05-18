@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import TextIO
@@ -12,10 +13,12 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.core.config import settings  # noqa: E402
+from app.services.tracing.repository import PostgreSQLTraceRepository  # noqa: E402
 from app.services.tracing.retention import (  # noqa: E402
     TraceCleanupStats,
     TraceRetentionPolicy,
     cleanup_jsonl_traces,
+    cleanup_postgres_traces,
 )
 from app.services.tracing.serializers import redact_trace_text  # noqa: E402
 
@@ -31,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--keep-eval-exported-days", type=int, default=180)
     parser.add_argument("--max-delete", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=500)
+    parser.add_argument("--scan-limit", type=int, default=5000)
     parser.add_argument("--archive-before-delete", action="store_true", default=True)
     parser.add_argument("--no-archive-before-delete", dest="archive_before_delete", action="store_false")
     parser.add_argument("--archive-path", type=Path)
@@ -54,21 +58,51 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(TraceCleanupStats(fatal=True).to_dict(), ensure_ascii=False))
         return 1
 
-    if args.backend == "postgres":
-        _warn(sys.stderr, "trace_cleanup_postgres_not_implemented", NotImplementedError("PostgreSQL cleanup is not implemented yet"))
-        print(json.dumps(TraceCleanupStats(fatal=True).to_dict(), ensure_ascii=False))
-        return 1
+    backend = _resolve_backend(args.backend, args.database_url)
 
-    jsonl_path = args.jsonl_path or DEFAULT_JSONL_PATH
-    stats = cleanup_jsonl_traces(
-        jsonl_path,
-        policy=policy,
-        eval_dataset_path=args.eval_dataset,
-        archive_path=args.archive_path,
-        apply=args.apply,
-    )
+    if backend == "postgres":
+        database_url = (
+            os.environ.get("TRACE_DATABASE_URL")
+            or os.environ.get("DATABASE_URL")
+            or args.database_url
+        )
+        if not database_url:
+            _warn(sys.stderr, "trace_cleanup_missing_database_url", ValueError("database_url required for postgres backend"))
+            print(json.dumps(TraceCleanupStats(fatal=True).to_dict(), ensure_ascii=False))
+            return 1
+        repository = PostgreSQLTraceRepository(str(database_url), configured_backend="postgres")
+        repository.initialize()
+        stats = cleanup_postgres_traces(
+            repository,
+            policy=policy,
+            eval_dataset_path=args.eval_dataset,
+            archive_path=args.archive_path,
+            apply=args.apply,
+            scan_limit=args.scan_limit,
+        )
+    else:
+        jsonl_path = args.jsonl_path or DEFAULT_JSONL_PATH
+        stats = cleanup_jsonl_traces(
+            jsonl_path,
+            policy=policy,
+            eval_dataset_path=args.eval_dataset,
+            archive_path=args.archive_path,
+            apply=args.apply,
+        )
+
     print(json.dumps(stats.to_dict(), ensure_ascii=False))
     return 1 if stats.fatal else 0
+
+
+def _resolve_backend(backend: str, database_url: str | None) -> str:
+    if backend == "auto":
+        has_db = bool(
+            database_url
+            or os.environ.get("TRACE_DATABASE_URL")
+            or os.environ.get("DATABASE_URL")
+        )
+        return "postgres" if has_db else "jsonl"
+    return backend
 
 
 def _warn(stderr: TextIO | None, event: str, exc: Exception) -> None:

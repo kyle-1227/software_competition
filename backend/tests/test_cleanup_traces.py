@@ -9,6 +9,7 @@ from app.schemas.trace import SpanKind, Trace, TraceSpan
 from app.services.tracing.retention import (
     TraceRetentionPolicy,
     cleanup_jsonl_traces,
+    cleanup_postgres_traces,
 )
 from scripts.cleanup_traces import main
 
@@ -256,6 +257,226 @@ def test_cleanup_jsonl_dry_run_no_archive_path_when_archive_disabled(tmp_path) -
     assert stats.candidates == 1
     assert stats.would_archive == 0
     assert stats.archive_path is None
+
+
+# -- PostgreSQL cleanup tests --
+
+
+def test_cleanup_postgres_dry_run_does_not_delete() -> None:
+    now = datetime.now(timezone.utc)
+    repo = _FakePostgresRepository([
+        _trace("old", closed_at=now - timedelta(days=60)),
+    ])
+
+    stats = cleanup_postgres_traces(
+        repo,
+        policy=TraceRetentionPolicy(keep_days=30),
+        apply=False,
+    )
+
+    assert stats.candidates == 1
+    assert stats.would_delete == 1
+    assert repo.deleted_batches == []
+
+
+def test_cleanup_postgres_apply_deletes_in_batches() -> None:
+    now = datetime.now(timezone.utc)
+    repo = _FakePostgresRepository([
+        _trace(f"trace-{i}", closed_at=now - timedelta(days=60))
+        for i in range(5)
+    ])
+
+    stats = cleanup_postgres_traces(
+        repo,
+        policy=TraceRetentionPolicy(keep_days=30, max_delete=5, batch_size=2),
+        apply=True,
+    )
+
+    assert stats.deleted == 5
+    assert repo.deleted_batches == [2, 2, 1]
+
+
+def test_cleanup_postgres_archive_before_delete(tmp_path) -> None:
+    now = datetime.now(timezone.utc)
+    full_question = "FULL QUESTION SHOULD NOT LEAK " * 20
+    repo = _FakePostgresRepository([
+        _trace("old", question=full_question, closed_at=now - timedelta(days=60)),
+    ])
+    archive = tmp_path / "archive.jsonl"
+
+    stats = cleanup_postgres_traces(
+        repo,
+        policy=TraceRetentionPolicy(keep_days=30),
+        apply=True,
+        archive_path=archive,
+    )
+
+    assert stats.archived == 1
+    assert stats.deleted == 1
+    archived_content = archive.read_text(encoding="utf-8")
+    assert full_question not in archived_content
+
+
+def test_cleanup_postgres_archive_failure_prevents_delete(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    repo = _FakePostgresRepository([
+        _trace("old", closed_at=now - timedelta(days=60)),
+    ])
+
+    def _fail(*args, **kwargs):
+        raise OSError("archive write failed")
+
+    monkeypatch.setattr("app.services.tracing.retention._write_archive", _fail)
+
+    stats = cleanup_postgres_traces(
+        repo,
+        policy=TraceRetentionPolicy(keep_days=30),
+        apply=True,
+    )
+
+    assert stats.fatal is True
+    assert stats.deleted == 0
+
+
+def test_cleanup_postgres_eval_exported_retention(tmp_path) -> None:
+    now = datetime.now(timezone.utc)
+    repo = _FakePostgresRepository([
+        _trace("eval-trace", closed_at=now - timedelta(days=120)),
+    ])
+    eval_dataset = tmp_path / "cases.jsonl"
+    eval_dataset.write_text(json.dumps({"case_id": "c", "trace_id": "eval-trace"}) + "\n", encoding="utf-8")
+
+    stats_no_eval = cleanup_postgres_traces(
+        repo,
+        policy=TraceRetentionPolicy(keep_days=30, keep_eval_exported_days=180),
+        apply=False,
+    )
+    assert stats_no_eval.candidates == 1
+
+    stats_with_eval = cleanup_postgres_traces(
+        repo,
+        policy=TraceRetentionPolicy(keep_days=30, keep_eval_exported_days=180),
+        eval_dataset_path=eval_dataset,
+        apply=False,
+    )
+    assert stats_with_eval.candidates == 0
+
+
+def test_cleanup_postgres_repository_list_failure_is_fatal() -> None:
+    repo = _FakePostgresRepository([])
+    repo.list_should_fail = True
+
+    stats = cleanup_postgres_traces(
+        repo,
+        policy=TraceRetentionPolicy(keep_days=30),
+        apply=False,
+    )
+
+    assert stats.fatal is True
+    assert stats.failed >= 1
+
+
+# -- CLI tests for postgres --
+
+
+def test_cleanup_cli_postgres_missing_db_url_fails(tmp_path) -> None:
+    code = main(["--backend", "postgres", "--database-url", ""])
+
+    assert code == 1
+
+
+def test_cleanup_cli_postgres_fake_repository(monkeypatch, tmp_path) -> None:
+    now = datetime.now(timezone.utc)
+    repo = _FakePostgresRepository([
+        _trace("old", closed_at=now - timedelta(days=60)),
+    ])
+
+    def _fake_repo(*args, **kwargs):
+        return repo
+
+    monkeypatch.setattr("scripts.cleanup_traces.PostgreSQLTraceRepository", _fake_repo)
+
+    code = main([
+        "--backend", "postgres",
+        "--database-url", "postgresql://fake",
+        "--apply",
+    ])
+
+    assert code == 0
+    assert repo.deleted_batches
+
+
+def test_cleanup_cli_auto_postgres_when_db_url(monkeypatch, tmp_path) -> None:
+    now = datetime.now(timezone.utc)
+    repo = _FakePostgresRepository([
+        _trace("old", closed_at=now - timedelta(days=60)),
+    ])
+
+    def _fake_repo(*args, **kwargs):
+        return repo
+
+    monkeypatch.setattr("scripts.cleanup_traces.PostgreSQLTraceRepository", _fake_repo)
+
+    code = main([
+        "--backend", "auto",
+        "--database-url", "postgresql://fake",
+        "--apply",
+    ])
+
+    assert code == 0
+    assert repo.deleted_batches
+
+
+def test_cleanup_cli_auto_jsonl_without_db_url(tmp_path) -> None:
+    trace_file = tmp_path / "traces.jsonl"
+    now = datetime.now(timezone.utc)
+    old = _trace("old", closed_at=now - timedelta(days=60))
+    trace_file.write_text(old.model_dump_json() + "\n", encoding="utf-8")
+
+    code = main([
+        "--backend", "auto",
+        "--database-url", "",
+        "--jsonl-path", str(trace_file),
+    ])
+
+    assert code == 0
+
+
+class _FakePostgresRepository:
+    def __init__(self, traces):
+        self.traces = {t.trace_id: t for t in traces}
+        self.deleted_batches: list[int] = []
+        self.archived: list[str] = []
+        self.list_should_fail = False
+
+    def initialize(self) -> None:
+        pass
+
+    def list_trace_cleanup_rows(self, *, limit=5000):
+        if self.list_should_fail:
+            raise RuntimeError("list failed")
+        now = datetime.now(timezone.utc)
+        rows = []
+        for t in self.traces.values():
+            rows.append({
+                "trace_id": t.trace_id,
+                "status": t.status.value if hasattr(t.status, "value") else str(t.status),
+                "closed_at": t.closed_at,
+                "degraded": False,
+                "fallback_used": False,
+            })
+        return rows[:limit]
+
+    def get_trace(self, trace_id):
+        return self.traces.get(trace_id)
+
+    def delete_traces(self, trace_ids, batch_size=500):
+        deleted = 0
+        for i in range(0, len(trace_ids), batch_size):
+            batch = trace_ids[i:i + batch_size]
+            self.deleted_batches.append(len(batch))
+            deleted += len(batch)
+        return deleted
 
 
 def _trace(

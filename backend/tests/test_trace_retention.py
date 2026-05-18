@@ -14,9 +14,11 @@ from app.services.tracing.retention import (
     TraceCleanupStats,
     TraceExportStats,
     TraceRetentionPolicy,
+    cleanup_candidate_for_row,
     cleanup_candidate_for_trace,
     load_eval_exported_trace_ids,
     select_cleanup_candidates,
+    select_cleanup_candidates_from_rows,
 )
 
 
@@ -181,6 +183,57 @@ def test_export_stats_includes_output_path_and_fatal() -> None:
 
     assert payload["output_path"] == "out.jsonl"
     assert payload["fatal"] is True
+
+
+def test_cleanup_candidate_for_row_matches_trace_rules() -> None:
+    now = datetime(2026, 5, 17, tzinfo=timezone.utc)
+    policy = TraceRetentionPolicy(keep_days=30, keep_error_days=90, keep_degraded_days=90, keep_eval_exported_days=180)
+    closed = (now - timedelta(days=100)).isoformat()
+
+    success = cleanup_candidate_for_row(
+        {"trace_id": "s", "status": "success", "closed_at": closed}, policy, now=now
+    )
+    error = cleanup_candidate_for_row(
+        {"trace_id": "e", "status": "error", "closed_at": closed}, policy, now=now
+    )
+    degraded = cleanup_candidate_for_row(
+        {"trace_id": "d", "status": "success", "closed_at": closed, "degraded": True}, policy, now=now
+    )
+    fallback = cleanup_candidate_for_row(
+        {"trace_id": "f", "status": "success", "closed_at": closed, "fallback_used": True}, policy, now=now
+    )
+    evaled = cleanup_candidate_for_row(
+        {"trace_id": "eval", "status": "success", "closed_at": (now - timedelta(days=200)).isoformat()}, policy, eval_exported=True, now=now
+    )
+    running = cleanup_candidate_for_row(
+        {"trace_id": "r", "status": "running", "closed_at": closed}, policy, now=now
+    )
+    open_trace = cleanup_candidate_for_row(
+        {"trace_id": "o", "status": "success", "closed_at": None}, policy, now=now
+    )
+
+    assert success is not None and success.reason == REASON_SUCCESS_OLD
+    assert error is not None and error.reason == REASON_ERROR_OLD
+    assert degraded is not None and degraded.reason == REASON_DEGRADED_OLD and degraded.degraded is True
+    assert fallback is not None and fallback.reason == REASON_DEGRADED_OLD and fallback.fallback_used is True
+    assert evaled is not None and evaled.reason == REASON_EVAL_EXPORTED_OLD
+    assert running is None
+    assert open_trace is None
+
+
+def test_select_cleanup_candidates_from_rows_respects_max_delete() -> None:
+    now = datetime(2026, 5, 17, tzinfo=timezone.utc)
+    closed = (now - timedelta(days=100)).isoformat()
+    rows = [
+        {"trace_id": f"trace-{i}", "status": "success", "closed_at": closed}
+        for i in range(5)
+    ]
+
+    candidates = select_cleanup_candidates_from_rows(
+        rows, TraceRetentionPolicy(keep_days=1, max_delete=2), now=now
+    )
+
+    assert len(candidates) == 2
 
 
 def _trace(

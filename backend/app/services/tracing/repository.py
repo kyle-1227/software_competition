@@ -83,6 +83,8 @@ class TraceRepository(Protocol):
         status: str | None = None,
     ) -> list[dict[str, Any]]: ...
 
+    def list_trace_cleanup_rows(self, *, limit: int = 5000) -> list[dict[str, Any]]: ...
+
     def delete_traces(self, trace_ids: list[str], batch_size: int = 500) -> int: ...
 
 
@@ -248,6 +250,10 @@ class JsonlTraceRepository:
             database_url_configured=False,
             capture_mode=resolve_capture_mode(),
         )
+
+    def list_trace_cleanup_rows(self, *, limit: int = 5000) -> list[dict[str, Any]]:
+        del limit
+        raise NotImplementedError("JSONL trace cleanup rows not supported; use cleanup_jsonl_traces()")
 
     def delete_traces(self, trace_ids: list[str], batch_size: int = 500) -> int:
         del trace_ids, batch_size
@@ -575,12 +581,39 @@ class PostgreSQLTraceRepository:
                     for index in range(0, len(trace_ids), batch_size):
                         batch = trace_ids[index : index + batch_size]
                         cur.execute(
-                            "DELETE FROM agent_traces WHERE trace_id = ANY(%s)",
+                            "DELETE FROM agent_traces WHERE trace_id = ANY(%s) AND status != 'running' AND closed_at IS NOT NULL",
                             (batch,),
                         )
                         deleted += int(cur.rowcount or 0)
             self._record_success()
             return deleted
+        except Exception as exc:
+            self._record_error(exc)
+            raise
+
+    def list_trace_cleanup_rows(self, *, limit: int = 5000) -> list[dict[str, Any]]:
+        limit = max(0, min(int(limit or 5000), 10000))
+        if limit == 0:
+            return []
+        try:
+            with self._connect() as conn:
+                with conn.cursor(row_factory=self._dict_row()) as cur:
+                    cur.execute(
+                        """
+                        SELECT t.trace_id, t.status, t.closed_at,
+                               COALESCE(BOOL_OR(s.degraded), FALSE) AS degraded,
+                               COALESCE(BOOL_OR(s.fallback_used), FALSE) AS fallback_used
+                        FROM agent_traces t
+                        LEFT JOIN agent_trace_spans s ON s.trace_id = t.trace_id
+                        GROUP BY t.trace_id, t.status, t.closed_at
+                        ORDER BY t.closed_at ASC NULLS LAST, t.created_at ASC
+                        LIMIT %s
+                        """,
+                        (limit,),
+                    )
+                    rows = cur.fetchall()
+            self._record_success()
+            return [dict(row) for row in rows]
         except Exception as exc:
             self._record_error(exc)
             raise
