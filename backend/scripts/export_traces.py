@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any, TextIO
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_JSONL_PATH = BACKEND_ROOT / "data" / "traces" / "traces.jsonl"
+PROJECT_ROOT = BACKEND_ROOT.parent
+DEFAULT_JSONL_PATH = PROJECT_ROOT / "data" / "traces" / "traces.jsonl"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 

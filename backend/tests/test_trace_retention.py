@@ -168,6 +168,13 @@ def test_cleanup_stats_to_dict_includes_archive_and_backup_paths() -> None:
     assert payload["backup_path"] == "b.bak"
 
 
+def test_cleanup_stats_includes_fatal() -> None:
+    stats = TraceCleanupStats(fatal=True)
+    payload = stats.to_dict()
+
+    assert payload["fatal"] is True
+
+
 def test_export_stats_includes_output_path_and_fatal() -> None:
     stats = TraceExportStats(output_path="out.jsonl", fatal=True)
     payload = stats.to_dict()

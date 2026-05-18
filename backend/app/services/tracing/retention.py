@@ -65,6 +65,7 @@ class TraceCleanupStats:
     dry_run: bool = True
     archive_path: str | None = None
     backup_path: str | None = None
+    fatal: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -181,6 +182,101 @@ def write_sanitized_traces_jsonl(traces: Iterable[Trace], output: Path, *, apply
             except Exception:
                 stats.failed += 1
     return stats
+
+
+def cleanup_jsonl_traces(
+    jsonl_path: Path,
+    *,
+    policy: TraceRetentionPolicy,
+    eval_dataset_path: Path | None = None,
+    archive_path: Path | None = None,
+    apply: bool = False,
+) -> TraceCleanupStats:
+    stats = TraceCleanupStats(dry_run=not apply)
+    eval_exported_trace_ids = load_eval_exported_trace_ids(eval_dataset_path)
+
+    if not jsonl_path.exists():
+        return stats
+
+    kept_lines: list[str] = []
+    candidate_traces: list[Trace] = []
+    deleted_count = 0
+    try:
+        raw = jsonl_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        stats.failed += 1
+        stats.fatal = True
+        return stats
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            kept_lines.append(line)
+            stats.skipped += 1
+            continue
+        try:
+            payload = json.loads(line)
+            trace = Trace.model_validate(payload)
+        except Exception:
+            kept_lines.append(line)
+            stats.failed += 1
+            continue
+        candidate = cleanup_candidate_for_trace(
+            trace, policy, eval_exported=trace.trace_id in eval_exported_trace_ids
+        )
+        if candidate is not None and deleted_count < max(0, policy.max_delete):
+            stats.candidates += 1
+            stats.would_delete += 1
+            if policy.archive_before_delete:
+                stats.would_archive += 1
+            candidate_traces.append(trace)
+            deleted_count += 1
+        else:
+            kept_lines.append(line)
+
+    if not apply:
+        return stats
+
+    if deleted_count == 0:
+        return stats
+
+    if policy.archive_before_delete and candidate_traces:
+        archive = archive_path or _default_archive_path()
+        try:
+            _write_archive(candidate_traces, archive)
+            stats.archived = len(candidate_traces)
+        except Exception:
+            stats.failed += 1
+            stats.fatal = True
+            return stats
+        stats.archive_path = str(archive)
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    backup = jsonl_path.with_name(f"{jsonl_path.name}.bak.{timestamp}")
+    tmp = jsonl_path.with_name(f"{jsonl_path.name}.tmp")
+    try:
+        tmp.write_text("\n".join(kept_lines) + ("\n" if kept_lines else ""), encoding="utf-8")
+        jsonl_path.replace(backup)
+        tmp.replace(jsonl_path)
+        stats.deleted = deleted_count
+        stats.backup_path = str(backup)
+    except Exception:
+        stats.failed += 1
+        stats.fatal = True
+        if backup.exists():
+            backup.replace(jsonl_path)
+        return stats
+    return stats
+
+
+def _write_archive(traces: list[Trace], archive_path: Path) -> None:
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with archive_path.open("w", encoding="utf-8") as handle:
+        for trace in traces:
+            handle.write(json.dumps(sanitize_trace_for_persistence(trace), ensure_ascii=False, default=str) + "\n")
+
+
+def _default_archive_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "data" / "exports" / f"trace_archive_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.jsonl"
 
 
 def _older_than(closed_at: datetime, now: datetime, days: int) -> bool:
