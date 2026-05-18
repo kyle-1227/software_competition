@@ -191,6 +191,73 @@ def test_cleanup_cli_invalid_policy_returns_1(tmp_path) -> None:
     assert code == 1
 
 
+def test_cleanup_jsonl_archive_failure_does_not_rewrite(tmp_path, monkeypatch) -> None:
+    trace_file = tmp_path / "traces.jsonl"
+    now = datetime.now(timezone.utc)
+    old = _trace("old", closed_at=now - timedelta(days=60))
+    recent = _trace("recent", closed_at=now - timedelta(days=5))
+    trace_file.write_text(
+        "\n".join([old.model_dump_json(), recent.model_dump_json()]) + "\n",
+        encoding="utf-8",
+    )
+    original = trace_file.read_text(encoding="utf-8")
+
+    def _fail(*args, **kwargs):
+        raise OSError("archive write failed")
+
+    monkeypatch.setattr("app.services.tracing.retention._write_archive", _fail)
+
+    stats = cleanup_jsonl_traces(
+        trace_file,
+        policy=TraceRetentionPolicy(keep_days=30),
+        apply=True,
+    )
+
+    assert stats.fatal is True
+    assert stats.deleted == 0
+    assert trace_file.read_text(encoding="utf-8") == original
+
+
+def test_cleanup_jsonl_dry_run_reports_expected_archive_path(tmp_path) -> None:
+    trace_file = tmp_path / "traces.jsonl"
+    now = datetime.now(timezone.utc)
+    old = _trace("old", closed_at=now - timedelta(days=60))
+    trace_file.write_text(old.model_dump_json() + "\n", encoding="utf-8")
+    archive = tmp_path / "archive.jsonl"
+
+    stats = cleanup_jsonl_traces(
+        trace_file,
+        policy=TraceRetentionPolicy(keep_days=30),
+        apply=False,
+        archive_path=archive,
+    )
+
+    assert stats.candidates == 1
+    assert stats.would_archive == 1
+    assert stats.archive_path == str(archive)
+    assert stats.backup_path is None
+    assert not archive.exists()
+    assert not list(tmp_path.glob("traces.jsonl.bak.*"))
+    assert not list(tmp_path.glob("traces.jsonl.tmp*"))
+
+
+def test_cleanup_jsonl_dry_run_no_archive_path_when_archive_disabled(tmp_path) -> None:
+    trace_file = tmp_path / "traces.jsonl"
+    now = datetime.now(timezone.utc)
+    old = _trace("old", closed_at=now - timedelta(days=60))
+    trace_file.write_text(old.model_dump_json() + "\n", encoding="utf-8")
+
+    stats = cleanup_jsonl_traces(
+        trace_file,
+        policy=TraceRetentionPolicy(keep_days=30, archive_before_delete=False),
+        apply=False,
+    )
+
+    assert stats.candidates == 1
+    assert stats.would_archive == 0
+    assert stats.archive_path is None
+
+
 def _trace(
     trace_id: str,
     *,

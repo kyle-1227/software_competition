@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -234,6 +235,8 @@ def cleanup_jsonl_traces(
             kept_lines.append(line)
 
     if not apply:
+        if stats.candidates > 0 and policy.archive_before_delete:
+            stats.archive_path = str(archive_path or _default_archive_path())
         return stats
 
     if deleted_count == 0:
@@ -255,15 +258,17 @@ def cleanup_jsonl_traces(
     tmp = jsonl_path.with_name(f"{jsonl_path.name}.tmp")
     try:
         tmp.write_text("\n".join(kept_lines) + ("\n" if kept_lines else ""), encoding="utf-8")
-        jsonl_path.replace(backup)
+        shutil.copy2(jsonl_path, backup)
         tmp.replace(jsonl_path)
         stats.deleted = deleted_count
         stats.backup_path = str(backup)
     except Exception:
         stats.failed += 1
         stats.fatal = True
-        if backup.exists():
-            backup.replace(jsonl_path)
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
         return stats
     return stats
 
