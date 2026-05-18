@@ -4,11 +4,12 @@ import json
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 
-from scripts.export_trace_eval_cases import (
+from app.services.tracing.eval_adapter import (
     EvalExportOptions,
     export_trace_eval_cases,
-    main,
 )
+from scripts.export_trace_eval_cases import main
+
 from app.schemas.trace import SpanKind, SpanStatus, Trace, TraceSpan
 
 
@@ -91,7 +92,7 @@ def test_export_cli_trace_id_filter(tmp_path) -> None:
 def test_export_cli_stdout_final_line_is_json(monkeypatch, capsys, tmp_path) -> None:
     repository = _FakeRepository([_failure_trace()])
     monkeypatch.setattr(
-        "scripts.export_trace_eval_cases._build_repository",
+        "app.services.tracing.eval_adapter._build_export_repository",
         lambda options: repository,
     )
 

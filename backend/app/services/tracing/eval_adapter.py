@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from hashlib import sha256
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any, Literal, TextIO
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.services.tracing.serializers import redact_trace_text
 
 from app.schemas.trace import Trace
 from app.services.tracing.analytics import FailureType, build_trace_analytics
@@ -412,3 +417,167 @@ def _enum_value(value: Any) -> str | None:
     if value is None:
         return None
     return str(getattr(value, "value", value))
+
+
+# ── Eval export (originally from scripts/export_trace_eval_cases.py) ─────────
+
+
+@dataclass
+class EvalExportOptions:
+    dataset: Path
+    trace_id: str | None = None
+    session_id: str | None = None
+    status: str | None = None
+    failure_type: str | None = None
+    limit: int = 100
+    include_success: bool = False
+    database_url: str | None = None
+    trace_backend: str = "auto"
+    apply: bool = False
+    verbose: bool = False
+
+
+@dataclass
+class EvalExportStats:
+    traces_seen: int = 0
+    eligible: int = 0
+    exported: int = 0
+    deduplicated: int = 0
+    skipped: int = 0
+    failed: int = 0
+    dry_run: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def export_trace_eval_cases(
+    options: EvalExportOptions,
+    *,
+    repository: Any | None = None,
+    writer: Any | None = None,
+    stderr: TextIO | None = None,
+) -> EvalExportStats:
+    from app.services.tracing.analytics import build_trace_analytics
+    from app.services.tracing.eval_dataset import (
+        TraceEvalDatasetWriter,
+    )
+    from app.services.tracing.repository import (
+        JsonlTraceRepository,
+        PostgreSQLTraceRepository,
+        build_trace_repository,
+    )
+
+    stats = EvalExportStats(dry_run=not options.apply)
+    try:
+        if repository is None:
+            repository = _build_export_repository(options)
+        else:
+            repository = repository
+    except Exception as exc:
+        stats.failed += 1
+        _warn_export(stderr, "repository_initialize_failed", error=exc)
+        return stats
+
+    try:
+        traces = _candidate_export_traces(repository, options)
+    except Exception as exc:
+        stats.failed += 1
+        _warn_export(stderr, "trace_listing_failed", error=exc)
+        return stats
+
+    writer = writer or TraceEvalDatasetWriter(options.dataset)
+    for trace in traces:
+        if trace is None:
+            stats.skipped += 1
+            continue
+        stats.traces_seen += 1
+        try:
+            full_trace = _load_full_export_trace(repository, trace)
+            if full_trace is None:
+                stats.skipped += 1
+                continue
+            analytics = build_trace_analytics(full_trace)
+            failure_type = str(analytics.get("failure_type") or "")
+            if options.failure_type and failure_type != options.failure_type:
+                stats.skipped += 1
+                continue
+            eligible = should_export_trace_to_eval(
+                full_trace, analytics, include_success=options.include_success,
+            )
+            if not eligible:
+                stats.skipped += 1
+                continue
+            stats.eligible += 1
+            case = trace_to_eval_case(
+                full_trace, source="cli_export", analytics=analytics,
+                include_success=options.include_success,
+            )
+            if not options.apply:
+                continue
+            if writer.append_case(case):
+                stats.exported += 1
+            else:
+                stats.deduplicated += 1
+        except Exception as exc:
+            stats.failed += 1
+            _warn_export(stderr, "trace_eval_case_export_failed", trace_id=getattr(trace, "trace_id", None), error=exc)
+            continue
+    return stats
+
+
+def _candidate_export_traces(repository: Any, options: EvalExportOptions) -> list[Any]:
+    if options.trace_id:
+        return [repository.get_trace(options.trace_id)]
+    traces = repository.list_traces(
+        limit=options.limit, session_id=options.session_id, status=options.status,
+    )
+    return list(traces or [])[:options.limit]
+
+
+def _load_full_export_trace(repository: Any, trace: Any) -> Any | None:
+    trace_id = getattr(trace, "trace_id", None)
+    if not trace_id:
+        return None
+    loaded = repository.get_trace(trace_id)
+    return loaded or trace
+
+
+def _build_export_repository(options: EvalExportOptions) -> Any:
+    from app.services.tracing.repository import (
+        JsonlTraceRepository,
+        PostgreSQLTraceRepository,
+        build_trace_repository,
+    )
+
+    if options.trace_backend == "postgres" or (
+        options.trace_backend == "auto" and options.database_url
+    ):
+        if not options.database_url:
+            raise RuntimeError("database_url is required for postgres trace export")
+        repository = PostgreSQLTraceRepository(str(options.database_url), configured_backend=options.trace_backend)
+        repository.initialize()
+        return repository
+    if options.trace_backend == "jsonl":
+        repository = JsonlTraceRepository(configured_backend="jsonl")
+        repository.initialize()
+        return repository
+    return build_trace_repository()
+
+
+def _warn_export(
+    stderr: TextIO | None,
+    event: str,
+    *,
+    trace_id: str | None = None,
+    error: Exception | None = None,
+) -> None:
+    if stderr is None:
+        return
+    payload: dict[str, Any] = {"event": event}
+    if trace_id:
+        payload["trace_id"] = str(trace_id)
+    if error is not None:
+        payload["error_type"] = error.__class__.__name__
+        payload["error_summary"] = redact_trace_text(str(error))[:500]
+    stderr.write(json.dumps(payload, ensure_ascii=False) + "\n")

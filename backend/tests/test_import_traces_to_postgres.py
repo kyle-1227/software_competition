@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from io import StringIO
 
-from scripts.import_traces_to_postgres import (
+from app.services.tracing.trace_import import (
     ImportOptions,
     import_traces,
     iter_import_spans,
-    main,
     normalize_trace_payload_for_import,
 )
+from scripts.import_traces_to_postgres import main
 
 
 def test_import_dry_run_does_not_write_and_outputs_json_stats(tmp_path, capsys) -> None:
