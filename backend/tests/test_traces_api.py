@@ -212,6 +212,96 @@ def test_export_trace_eval_case_not_found_api(tmp_path) -> None:
     assert response.json()["error"]["code"] == "NOT_FOUND"
 
 
+def test_trace_metrics_combined_endpoint(tmp_path) -> None:
+    store, _ = _store_with_trace(tmp_path)
+
+    with _client_with_trace_store(store) as client:
+        response = client.get("/api/traces/metrics")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["success"] is True
+    assert body["data"]["schema_version"] == "trace_operational_metrics.v1"
+    assert "overview" in body["data"]
+    assert "failures" in body["data"]
+    assert "latency" in body["data"]
+    assert "repository" in body["data"]
+    assert "eval_readiness" in body["data"]
+
+
+def test_trace_metrics_overview_endpoint(tmp_path) -> None:
+    store, _ = _store_with_trace(tmp_path)
+
+    with _client_with_trace_store(store) as client:
+        response = client.get("/api/traces/metrics/overview")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["success"] is True
+    assert "total_traces" in body["data"]
+    assert "status_counts" in body["data"]
+
+
+def test_trace_metrics_failures_endpoint(tmp_path) -> None:
+    store, _ = _store_with_trace(tmp_path)
+
+    with _client_with_trace_store(store) as client:
+        response = client.get("/api/traces/metrics/failures")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["success"] is True
+    assert "failure_type_counts" in body["data"]
+
+
+def test_trace_metrics_latency_endpoint(tmp_path) -> None:
+    store, _ = _store_with_trace(tmp_path)
+
+    with _client_with_trace_store(store) as client:
+        response = client.get("/api/traces/metrics/latency")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["success"] is True
+    assert "count" in body["data"]
+    assert "p50_ms" in body["data"]
+
+
+def test_trace_metrics_repository_endpoint(tmp_path) -> None:
+    store, _ = _store_with_trace(tmp_path)
+
+    with _client_with_trace_store(store) as client:
+        response = client.get("/api/traces/metrics/repository")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["success"] is True
+    assert "health" in body["data"]
+
+
+def test_trace_metrics_eval_readiness_endpoint(tmp_path) -> None:
+    store, _ = _store_with_trace(tmp_path)
+
+    with _client_with_trace_store(store) as client:
+        response = client.get("/api/traces/metrics/eval-readiness")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["success"] is True
+    assert "eligible_eval_cases" in body["data"]
+
+
+def test_trace_metrics_routes_not_captured_by_trace_id(tmp_path) -> None:
+    store = TraceStore(storage_path=tmp_path)
+
+    with _client_with_trace_store(store) as client:
+        response = client.get("/api/traces/metrics/overview")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["total_traces"] == 0
+
+
 def _client_with_trace_store(store: TraceStore):
     app.dependency_overrides[get_trace_store] = lambda: store
     client = TestClient(app)

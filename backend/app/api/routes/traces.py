@@ -18,6 +18,15 @@ from app.services.tracing.reader import (
     sanitize_span_for_export,
     sanitize_trace_for_export,
 )
+from app.services.tracing.metrics import (
+    build_trace_failure_metrics,
+    build_trace_latency_metrics,
+    build_trace_metrics_overview,
+    build_trace_operational_metrics,
+    build_trace_repository_metrics,
+    build_trace_eval_readiness_metrics,
+    load_recent_traces_for_metrics,
+)
 from app.services.tracing.summary import build_trace_summary
 from app.services.tracing.timeline import build_trace_timeline
 
@@ -45,6 +54,117 @@ async def get_trace_health(
         data=trace_store.health_status(),
         trace_id=request.state.trace_id,
     )
+
+
+@router.get("/metrics", response_model=ApiResponse[dict[str, Any]])
+async def get_trace_metrics(
+    request: Request,
+    window_hours: int = 24,
+    limit: int = 1000,
+    session_id: str | None = None,
+    status: str | None = None,
+    top_n: int = 10,
+    slow_threshold_ms: int = 5000,
+    trace_store: TraceStore = Depends(get_trace_store),
+) -> ApiResponse[dict[str, Any]]:
+    result = load_recent_traces_for_metrics(
+        trace_store, window_hours=window_hours, limit=limit, session_id=session_id, status=status
+    )
+    metrics = build_trace_operational_metrics(
+        result.traces,
+        repository_health=trace_store.health_status(),
+        window_hours=window_hours,
+        top_n=top_n,
+        slow_threshold_ms=slow_threshold_ms,
+    )
+    metrics["metadata"]["trace_count"] = len(result.traces)
+    metrics["metadata"]["skipped_trace_count"] = result.skipped_trace_count
+    metrics["metadata"]["limit"] = limit
+    metrics["metadata"]["session_id"] = session_id
+    metrics["metadata"]["status"] = status
+    return success_response(data=metrics, trace_id=request.state.trace_id)
+
+
+@router.get("/metrics/overview", response_model=ApiResponse[dict[str, Any]])
+async def get_trace_metrics_overview(
+    request: Request,
+    window_hours: int = 24,
+    limit: int = 1000,
+    session_id: str | None = None,
+    status: str | None = None,
+    trace_store: TraceStore = Depends(get_trace_store),
+) -> ApiResponse[dict[str, Any]]:
+    result = load_recent_traces_for_metrics(
+        trace_store, window_hours=window_hours, limit=limit, session_id=session_id, status=status
+    )
+    data = build_trace_metrics_overview(result.traces, window_hours=window_hours)
+    return success_response(data=data, trace_id=request.state.trace_id)
+
+
+@router.get("/metrics/failures", response_model=ApiResponse[dict[str, Any]])
+async def get_trace_metrics_failures(
+    request: Request,
+    window_hours: int = 24,
+    limit: int = 1000,
+    session_id: str | None = None,
+    status: str | None = None,
+    top_n: int = 10,
+    trace_store: TraceStore = Depends(get_trace_store),
+) -> ApiResponse[dict[str, Any]]:
+    result = load_recent_traces_for_metrics(
+        trace_store, window_hours=window_hours, limit=limit, session_id=session_id, status=status
+    )
+    data = build_trace_failure_metrics(result.traces, top_n=top_n)
+    return success_response(data=data, trace_id=request.state.trace_id)
+
+
+@router.get("/metrics/latency", response_model=ApiResponse[dict[str, Any]])
+async def get_trace_metrics_latency(
+    request: Request,
+    window_hours: int = 24,
+    limit: int = 1000,
+    session_id: str | None = None,
+    status: str | None = None,
+    slow_threshold_ms: int = 5000,
+    trace_store: TraceStore = Depends(get_trace_store),
+) -> ApiResponse[dict[str, Any]]:
+    result = load_recent_traces_for_metrics(
+        trace_store, window_hours=window_hours, limit=limit, session_id=session_id, status=status
+    )
+    data = build_trace_latency_metrics(result.traces, slow_threshold_ms=slow_threshold_ms)
+    return success_response(data=data, trace_id=request.state.trace_id)
+
+
+@router.get("/metrics/repository", response_model=ApiResponse[dict[str, Any]])
+async def get_trace_metrics_repository(
+    request: Request,
+    window_hours: int = 24,
+    limit: int = 1000,
+    session_id: str | None = None,
+    status: str | None = None,
+    trace_store: TraceStore = Depends(get_trace_store),
+) -> ApiResponse[dict[str, Any]]:
+    result = load_recent_traces_for_metrics(
+        trace_store, window_hours=window_hours, limit=limit, session_id=session_id, status=status
+    )
+    data = build_trace_repository_metrics(result.traces, repository_health=trace_store.health_status())
+    return success_response(data=data, trace_id=request.state.trace_id)
+
+
+@router.get("/metrics/eval-readiness", response_model=ApiResponse[dict[str, Any]])
+async def get_trace_metrics_eval_readiness(
+    request: Request,
+    window_hours: int = 24,
+    limit: int = 1000,
+    session_id: str | None = None,
+    status: str | None = None,
+    trace_store: TraceStore = Depends(get_trace_store),
+) -> ApiResponse[dict[str, Any]]:
+    result = load_recent_traces_for_metrics(
+        trace_store, window_hours=window_hours, limit=limit, session_id=session_id, status=status
+    )
+    data = build_trace_eval_readiness_metrics(result.traces)
+    return success_response(data=data, trace_id=request.state.trace_id)
 
 
 @router.get("/{trace_id}", response_model=ApiResponse[dict[str, Any]])
