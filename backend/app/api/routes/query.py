@@ -18,12 +18,17 @@ async def run_query(
     harness: AgentHarness = Depends(get_agent_harness),
 ) -> ApiResponse[QueryResponse]:
     # AgentHarness 负责具体任务流程；这里仅做 HTTP 请求到任务流程的适配。
-    result = await harness.answer(payload)
+    result = await harness.answer(
+        payload,
+        request_id=request.state.trace_id,
+        metadata={"http_path": str(request.url.path)},
+    )
     return success_response(data=result, trace_id=request.state.trace_id)
 
 
 @router.post("/stream")
 async def run_query_stream(
+    request: Request,
     payload: QueryRequest,
     harness: AgentHarness = Depends(get_agent_harness),
 ) -> StreamingResponse:
@@ -33,7 +38,11 @@ async def run_query_stream(
     """
     async def event_generator():
         try:
-            async for event in harness.answer_stream(payload):
+            async for event in harness.answer_stream(
+                payload,
+                request_id=request.state.trace_id,
+                metadata={"http_path": str(request.url.path), "stream": True},
+            ):
                 import json
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:

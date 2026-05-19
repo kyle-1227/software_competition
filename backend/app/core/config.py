@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     agent_loop_high_risk_requires_approval: bool = True
 
     # ------------------------------------------------------------------
+    # Runtime Contract
+    # ------------------------------------------------------------------
+    runtime_max_steps: int = 16
+    runtime_timeout_seconds: float = 120.0
+
+    # ------------------------------------------------------------------
     # Reranker (SiliconFlow)
     # ------------------------------------------------------------------
     reranker_enabled: bool = True
@@ -76,6 +82,21 @@ class Settings(BaseSettings):
     siliconflow_api_key: str | None = None
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
     embedding_model: str = "BAAI/bge-large-zh-v1.5"
+
+    # ------------------------------------------------------------------
+    # Knowledge source of truth
+    # ------------------------------------------------------------------
+    knowledge_database_url: str | None = None
+    knowledge_active_by_default: bool = False
+    rag_anything_base_url: str | None = None
+    rag_anything_timeout_seconds: int = 120
+
+    # ------------------------------------------------------------------
+    # Sandbox backend
+    # ------------------------------------------------------------------
+    sandbox_backend: str = "local_disabled"
+    sandbox_docker_image: str = "python:3.11-slim"
+    sandbox_timeout_seconds: int = 5
 
     model_config = SettingsConfigDict(
         env_file=(BACKEND_DIR / ".env", ".env"),

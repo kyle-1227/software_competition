@@ -16,7 +16,6 @@ Constraints:
 Output fields:
 - language
 - script
-- execution_allowed
 - warnings
 
-SandboxExecutor is responsible for execution after safety checks.
+ToolBroker and SandboxExecutor are responsible for execution approval and safety checks.

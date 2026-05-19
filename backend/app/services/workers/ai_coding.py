@@ -35,7 +35,7 @@ class AICodingWorker(BaseWorker):
 
         # 2. Generate script via ai_coding tool, with bounded retry.
         coding_retry = await execute_tool_with_retry(
-            services.tool_registry,
+            getattr(services, "tool_broker", services.tool_registry),
             "ai_coding",
             {
                 "task": question,
@@ -44,6 +44,9 @@ class AICodingWorker(BaseWorker):
             },
             trace_store=getattr(services, "trace_store", None),
             trace_id=state.get("trace_id"),
+            caller=state.get("intent", self.name),
+            risk_level=state.get("risk_level", "unknown"),
+            run_id=state.get("trace_id"),
         )
         coding_result = coding_retry.result
 

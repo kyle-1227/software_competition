@@ -1,0 +1,2 @@
+{"id":"grd_001","answer":"依据 evidence_id=ev-001：检查火花塞连接状态。","evidence":[{"evidence_id":"ev-001","snippet":"检查火花塞连接状态。","source":"manual"}]}
+{"id":"grd_002","answer":"当前证据不足，不能给出确定维修结论。","evidence":[]}

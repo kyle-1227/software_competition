@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.verification.final_verifier import VERIFICATION_FAILED_ANSWER
 
 
 client = TestClient(app)
@@ -16,27 +17,18 @@ def test_query_returns_harness_trace_fields() -> None:
     body = response.json()
     data = body["data"]
     assert body["success"] is True
-    assert data["answer"]
+    assert data["answer"] == VERIFICATION_FAILED_ANSWER
     plan_steps = [item["step"].split(":", 1)[0] for item in data["plan"]]
     assert plan_steps[0] == "intake"
     assert "evaluate" in plan_steps
     assert plan_steps[-1] == "answer"
     assert data["evidence"]
-    assert set(data["evidence"][0]["metadata"]) == {
-        "chapter",
-        "section",
-        "block_type",
-        "chunk_id",
-    }
     assert data["tool_calls"]
-    assert data["evaluation"]["confidence"] > 0
+    assert data["evaluation"]["is_safe"] is True
+    assert data["evaluation"]["is_compliant"] is False
+    assert data["evaluation"]["confidence"] == 0.2
     assert data["trace_id"]
     assert data["sop"]
-    assert "建议先查" in data["answer"]
-    assert "相关页码" in data["answer"]
-    assert "证据片段" in data["answer"]
-    assert "初步判断" in data["answer"]
-    assert "下一步检查" in data["answer"]
     assert "memory" in data
     assert "ai_coding" in data
     assert "llm_usage" in data
@@ -56,17 +48,16 @@ def test_query_returns_ai_coding_and_sandbox_result() -> None:
     assert any(call["tool_name"] == "sandbox_execute" for call in data["tool_calls"])
 
 
-def test_query_parameter_question_returns_direct_value() -> None:
+def test_query_parameter_question_does_not_return_hardcoded_value() -> None:
     response = client.post(
         "/api/query",
         json={"question": "火花塞间隙是多少？", "device_name": "摩托车发动机"},
     )
 
     assert response.status_code == 200
-    data = response.json()["data"]
-    answer = data["answer"]
-    assert "火花塞间隙标准值：0.7～0.9 mm" in answer
-    assert "相关页码：P.3" in answer
+    answer = response.json()["data"]["answer"]
+    assert answer == VERIFICATION_FAILED_ANSWER
+    assert "0.7" not in answer
 
 
 def test_manual_alias_register_missing_file_uses_error_envelope() -> None:

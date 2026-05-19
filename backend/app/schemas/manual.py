@@ -17,6 +17,9 @@ class ManualRegisterRequest(BaseModel):
 
 class ManualRegisterResponse(BaseModel):
     manual_id: str
+    document_id: str | None = None
+    document_version_id: str | None = None
+    job_id: str | None = None
     file_path: str
     page_count: int | None = None
     status: str

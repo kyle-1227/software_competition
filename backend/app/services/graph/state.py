@@ -26,11 +26,16 @@ class HarnessState(TypedDict, total=False):
     # -- Phase 0 new fields --
     guardrail_passed: bool
     intent: str
+    task_plan: dict[str, Any]
+    risk_level: str
+    allowed_tools: list[str]
     _orchestrator_decision: Any
     worker_outputs: list[dict[str, Any]]
     evaluation_feedback: str
     iteration_count: int
     output_guardrail_issues: list[str]
+    verification_passed: bool
+    verification_issues: list[str]
     stream_events: list[dict[str, Any]]
     # -- Bounded Agent Loop fields --
     loop_decision_count: int
@@ -44,3 +49,8 @@ class HarnessState(TypedDict, total=False):
     clarification_question: str | None
     fail_safe_reason: str | None
     _agent_loop_decision: dict[str, Any]
+    # -- Production Runtime Contract fields --
+    runtime_request: dict[str, Any]
+    runtime_contract: dict[str, Any]
+    runtime_events: list[dict[str, Any]]
+    runtime_step_count: int

@@ -29,7 +29,7 @@ class FaultTriageWorker(BaseWorker):
 
         # 1. Call manual_lookup to retrieve evidence with bounded retry.
         retry_result = await execute_tool_with_retry(
-            services.tool_registry,
+            getattr(services, "tool_broker", services.tool_registry),
             "manual_lookup",
             {
                 "question": question,
@@ -39,6 +39,9 @@ class FaultTriageWorker(BaseWorker):
             },
             trace_store=getattr(services, "trace_store", None),
             trace_id=state.get("trace_id"),
+            caller=state.get("intent", self.name),
+            risk_level=state.get("risk_level", "unknown"),
+            run_id=state.get("trace_id"),
         )
         result = retry_result.result
 

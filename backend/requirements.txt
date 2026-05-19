@@ -12,3 +12,6 @@ langchain-openai==0.3.11
 openai==1.72.0
 requests==2.32.3
 psycopg[binary]==3.2.3
+sqlalchemy==2.0.36
+alembic==1.14.0
+pgvector==0.3.6

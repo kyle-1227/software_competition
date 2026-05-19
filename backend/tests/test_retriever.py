@@ -47,44 +47,36 @@ async def test_retriever_converts_vector_nodes_to_evidence() -> None:
 
 
 @pytest.mark.anyio
-async def test_retriever_uses_placeholder_when_index_load_fails(
+async def test_retriever_returns_empty_when_index_load_fails(
     tmp_path: Path,
 ) -> None:
     retriever = Retriever(index_path=tmp_path / "missing_index")
 
     evidence = await retriever.search("火花塞间隙是多少？", "CG125")
 
-    assert len(evidence) == 1
-    assert evidence[0].source == "manual::CG125"
-    assert evidence[0].page is None
-    assert evidence[0].score == 0.42
-    assert evidence[0].metadata["retriever"] == "llama-index-placeholder"
+    assert evidence == []
 
 
 @pytest.mark.anyio
-async def test_retriever_uses_placeholder_when_query_fails() -> None:
+async def test_retriever_returns_empty_when_query_fails() -> None:
     retriever = Retriever(vector_retriever=_FailingVectorRetriever())
 
     evidence = await retriever.search("火花塞间隙是多少？", "CG125")
 
-    assert len(evidence) == 1
-    assert evidence[0].source == "manual::CG125"
-    assert evidence[0].metadata["retriever"] == "llama-index-placeholder"
+    assert evidence == []
 
 
 @pytest.mark.anyio
-async def test_retriever_uses_placeholder_when_query_has_no_results() -> None:
+async def test_retriever_returns_empty_when_query_has_no_results() -> None:
     retriever = Retriever(vector_retriever=_FakeVectorRetriever([]))
 
     evidence = await retriever.search("火花塞间隙是多少？", "CG125")
 
-    assert len(evidence) == 1
-    assert evidence[0].source == "manual::CG125"
-    assert evidence[0].metadata["retriever"] == "llama-index-placeholder"
+    assert evidence == []
 
 
 @pytest.mark.anyio
-async def test_retriever_does_not_read_chunks_keyword_fallback(
+async def test_retriever_can_read_explicit_chunks_keyword_fallback(
     tmp_path: Path,
 ) -> None:
     chunks_path = tmp_path / "manual_chunks.jsonl"
@@ -113,8 +105,7 @@ async def test_retriever_does_not_read_chunks_keyword_fallback(
     evidence = await retriever.search("火花塞间隙是多少？", "CG125")
 
     assert len(evidence) == 1
-    assert evidence[0].source == "manual::CG125"
-    assert evidence[0].metadata["retriever"] == "llama-index-placeholder"
+    assert evidence[0].metadata["chunk_id"] == "manual:p3:r5"
 
 
 class _FakeVectorRetriever:

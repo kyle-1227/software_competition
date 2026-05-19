@@ -12,6 +12,7 @@ from app.services.agent_loop.retry import (
 )
 from app.services.tool_registry import ToolResult
 from app.services.workers.ai_coding import AICodingWorker
+from app.core.config import settings
 
 
 @pytest.mark.anyio
@@ -72,6 +73,28 @@ async def test_manual_lookup_degrades_to_placeholder_after_5_failures() -> None:
     assert isinstance(evidence, list)
     assert evidence[0]["metadata"]["retriever"] == "manual_lookup-degraded"
     assert evidence[0]["metadata"]["retry_attempts"] == 5
+
+
+@pytest.mark.anyio
+async def test_manual_lookup_degraded_placeholder_suppressed_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "app_env", "production")
+    registry = _AlwaysFailRegistry()
+
+    result = await execute_tool_with_retry(
+        registry,
+        "manual_lookup",
+        {"question": "spark plug gap"},
+        max_retries=5,
+        backoff_ms=[0, 0, 0, 0, 0],
+    )
+
+    assert result.success is True
+    assert result.degraded is True
+    assert result.result is not None
+    assert result.result.data == []
+    assert result.result.metadata["placeholder_suppressed"] is True
 
 
 @pytest.mark.anyio

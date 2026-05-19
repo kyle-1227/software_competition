@@ -56,6 +56,7 @@ def _build_new_graph(services, StateGraph, END, checkpointer) -> Any:
     graph.add_node("evaluator_optimizer_node", nodes["evaluator_optimizer_node"])
     graph.add_node("post_eval_loop_decision_node", nodes["post_eval_loop_decision_node"])
     graph.add_node("answer_regeneration_node", nodes["answer_regeneration_node"])
+    graph.add_node("final_verifier_node", nodes["final_verifier_node"])
 
     if use_og:
         graph.add_node("output_guardrail_node", nodes["output_guardrail_node"])
@@ -109,10 +110,14 @@ def _build_new_graph(services, StateGraph, END, checkpointer) -> Any:
             "approval": "approval_node",
             "clarification": "clarification_node",
             "fail_safe": "fail_safe_node",
-            "output": "output_guardrail_node" if use_og else "trace_node",
+            "output": "final_verifier_node",
         },
     )
     graph.add_edge("answer_regeneration_node", "evaluator_optimizer_node")
+    graph.add_edge(
+        "final_verifier_node",
+        "output_guardrail_node" if use_og else "trace_node",
+    )
     if use_og:
         graph.add_edge("approval_node", "output_guardrail_node")
         graph.add_edge("clarification_node", "output_guardrail_node")
@@ -137,6 +142,9 @@ def _build_shared_nodes(services) -> dict[str, Any]:
             or state.get("device_name")
             or "default"
         )
+        runtime_request = state.get("runtime_request")
+        if not isinstance(runtime_request, dict):
+            runtime_request = {}
         return {
             "question": state["question"],
             "device_name": state.get("device_name"),
@@ -162,6 +170,10 @@ def _build_shared_nodes(services) -> dict[str, Any]:
                         "use_real_ai_coding": getattr(
                             settings, "use_real_ai_coding", True
                         ),
+                    },
+                    "runtime": {
+                        "request_id": runtime_request.get("request_id"),
+                        "source": runtime_request.get("source"),
                     },
                     "llm_model": getattr(settings, "deepseek_model", None),
                     "embedding_model": getattr(settings, "embedding_model", None),
@@ -323,6 +335,25 @@ def _build_shared_nodes(services) -> dict[str, Any]:
 
 def _ensure_new_services(services) -> None:
     """Lazily construct Phase 1-2 services on the services namespace."""
+    if not hasattr(services, "policy_engine") or services.policy_engine is None:
+        from app.policy.engine import PolicyEngine
+
+        services.policy_engine = PolicyEngine()
+    if not hasattr(services, "tool_registry") or services.tool_registry is None:
+        from app.services.tool_registry import ToolRegistry
+
+        services.tool_registry = ToolRegistry()
+    if not hasattr(services, "tool_broker") or services.tool_broker is None:
+        from app.tools.broker import ToolBroker
+        from app.tools.manifest import build_default_tool_manifests
+
+        services.tool_broker = ToolBroker(
+            tool_registry=services.tool_registry,
+            manifests=build_default_tool_manifests(services.tool_registry),
+            policy_engine=services.policy_engine,
+            trace_store=getattr(services, "trace_store", None),
+        )
+
     if not hasattr(services, "orchestrator") or services.orchestrator is None:
         from app.services.orchestrator import Orchestrator
         from app.services.guardrails.input_guard import InputGuardrail
@@ -331,9 +362,14 @@ def _ensure_new_services(services) -> None:
         from app.services.workers.sop_guidance import SOPGuidanceWorker
         from app.services.workers.ai_coding import AICodingWorker
 
-        llm_client = getattr(services, "llm_client", None)
-        services.orchestrator = Orchestrator(llm_client=llm_client)
-        services.input_guardrail = InputGuardrail(llm_client=llm_client)
+        model_gateway = getattr(services, "model_gateway", None)
+        legacy_llm_client = getattr(services, "llm_client", None)
+        llm_entrypoint = model_gateway or legacy_llm_client
+        services.orchestrator = Orchestrator(
+            llm_client=legacy_llm_client,
+            model_gateway=model_gateway,
+        )
+        services.input_guardrail = InputGuardrail(llm_client=llm_entrypoint)
 
         workers = {
             "fault_triage": FaultTriageWorker(),
@@ -347,7 +383,9 @@ def _ensure_new_services(services) -> None:
         from app.services.evaluator_llm import LLMEvaluator
         from app.services.evaluator_optimizer import EvaluatorOptimizer
 
-        llm_client = getattr(services, "llm_client", None)
+        llm_client = getattr(services, "model_gateway", None) or getattr(
+            services, "llm_client", None
+        )
         fallback = getattr(services, "evaluator", None)
         services.llm_evaluator = LLMEvaluator(
             llm_client=llm_client,
@@ -361,13 +399,19 @@ def _ensure_new_services(services) -> None:
     if not hasattr(services, "output_guardrail") or services.output_guardrail is None:
         from app.services.guardrails.output_guard import OutputGuardrail
 
-        llm_client = getattr(services, "llm_client", None)
+        llm_client = getattr(services, "model_gateway", None) or getattr(
+            services, "llm_client", None
+        )
         services.output_guardrail = OutputGuardrail(llm_client=llm_client)
 
     if not hasattr(services, "agent_loop_controller") or services.agent_loop_controller is None:
         services.agent_loop_controller = AgentLoopController()
     if not hasattr(services, "agent_loop_policy") or services.agent_loop_policy is None:
         services.agent_loop_policy = AgentLoopPolicy.from_settings()
+    if not hasattr(services, "final_verifier") or services.final_verifier is None:
+        from app.verification.final_verifier import FinalVerifier
+
+        services.final_verifier = FinalVerifier()
 
 
 def _wrap_node_with_span(services, node_name: str, kind: SpanKind, node):
@@ -455,6 +499,9 @@ def _build_new_nodes(services) -> dict[str, Any]:
         return {
             "intent": decision.intent,
             "plan": decision.dynamic_plan,
+            "task_plan": decision.task_plan,
+            "risk_level": decision.risk_level,
+            "allowed_tools": decision.allowed_tools,
             "needs_ai_coding": "ai_coding" in decision.workers,
             "_orchestrator_decision": decision,
         }
@@ -575,6 +622,8 @@ def _build_new_nodes(services) -> dict[str, Any]:
         )
 
     async def output_guardrail_node(state: dict[str, Any]) -> dict[str, Any]:
+        if state.get("verification_passed") is False:
+            return {}
         answer = state.get("answer", "")
         evaluation = state.get("evaluation")
         result = await services.output_guardrail.check(answer, evaluation)
@@ -585,6 +634,18 @@ def _build_new_nodes(services) -> dict[str, Any]:
             ),
             "answer": modified if modified != answer else answer,
         }
+
+    async def final_verifier_node(state: dict[str, Any]) -> dict[str, Any]:
+        if (
+            state.get("requires_human_approval")
+            or state.get("clarification_question")
+            or state.get("fail_safe_reason")
+        ):
+            return {"verification_passed": True, "verification_issues": []}
+        result = services.final_verifier.verify(state)
+        if result.passed:
+            return {"verification_passed": True, "verification_issues": []}
+        return services.final_verifier.failure_update(result.issues)
 
     async def loop_decision_node(state: dict[str, Any]) -> dict[str, Any]:
         return _loop_decision_update(state, services)
@@ -739,6 +800,9 @@ def _build_new_nodes(services) -> dict[str, Any]:
         "answer_regeneration_node": _wrap_node_with_span(
             services, "answer_regeneration", SpanKind.NODE, answer_regeneration_node
         ),
+        "final_verifier_node": _wrap_node_with_span(
+            services, "final_verifier", SpanKind.GUARDRAIL, final_verifier_node
+        ),
         "approval_node": _wrap_node_with_span(
             services, "approval", SpanKind.NODE, approval_node
         ),
@@ -789,13 +853,16 @@ async def _run_manual_lookup_with_retry(
         },
     ) as span:
         retry_result = await execute_tool_with_retry(
-            services.tool_registry,
+            getattr(services, "tool_broker", services.tool_registry),
             "manual_lookup",
             payload,
             max_retries=policy.max_tool_retries,
             backoff_ms=policy.retry_backoff_ms,
             trace_store=getattr(services, "trace_store", None),
             trace_id=state.get("trace_id"),
+            caller=state.get("intent", "unknown"),
+            risk_level=state.get("risk_level", "unknown"),
+            run_id=state.get("trace_id"),
         )
         evidence: list[dict[str, Any]] = []
         if (
@@ -882,6 +949,8 @@ def _build_fallback_graph(services):
                 current |= await nodes[node_name]({**state, **current})
 
             async def finish() -> dict[str, Any]:
+                if "final_verifier_node" in nodes:
+                    await apply("final_verifier_node")
                 if getattr(settings, "use_output_guardrail", False):
                     await apply("output_guardrail_node")
                 await apply("trace_node")

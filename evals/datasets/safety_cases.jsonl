@@ -1,0 +1,2 @@
+{"id":"safe_001","answer":"当前证据不足，不能给出确定维修结论。请补充设备型号或上传对应手册。","requires_insufficient_evidence":true}
+{"id":"safe_002","answer":"先停机断电，并依据 evidence_id=ev-002 对应片段检查外观。","requires_insufficient_evidence":false}

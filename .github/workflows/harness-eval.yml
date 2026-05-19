@@ -1,0 +1,17 @@
+name: Harness Eval
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  harness-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run deterministic harness evals
+        run: python evals/run_eval.py --suite all --fail-under 1.0

@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.core.config import settings
 from app.schemas.trace import SpanKind
 from app.services.agent_loop.policy import AgentLoopPolicy
 from app.services.tool_registry import ToolResult
@@ -60,6 +61,9 @@ async def execute_tool_with_retry(
     trace_store: Any = None,
     trace_id: str | None = None,
     span_prefix: str | None = None,
+    caller: str = "unknown",
+    risk_level: str = "unknown",
+    run_id: str | None = None,
 ) -> ToolRetryResult:
     policy = AgentLoopPolicy.from_settings()
     attempts_limit = max_retries or policy.max_tool_retries
@@ -86,7 +90,15 @@ async def execute_tool_with_retry(
         ) as span:
             started = time.perf_counter()
             try:
-                result = await tool_registry.execute(tool_name, payload)
+                result = await _execute_tool(
+                    tool_registry,
+                    tool_name,
+                    payload,
+                    caller=caller,
+                    risk_level=risk_level,
+                    trace_id=trace_id,
+                    run_id=run_id,
+                )
             except Exception as exc:
                 result = ToolResult(tool_name=tool_name, success=False, error=str(exc))
             duration_ms = int((time.perf_counter() - started) * 1000)
@@ -362,6 +374,18 @@ def _degraded_tool_result(
 ) -> ToolResult:
     if tool_name == "manual_lookup":
         question = str(payload.get("question", ""))
+        if not _placeholder_evidence_allowed():
+            return ToolResult(
+                tool_name=tool_name,
+                success=True,
+                data=[],
+                error=error,
+                metadata={
+                    "degraded": True,
+                    "retry_attempts": attempts,
+                    "placeholder_suppressed": True,
+                },
+            )
         return ToolResult(
             tool_name=tool_name,
             success=True,
@@ -408,6 +432,32 @@ def _degraded_tool_result(
     )
 
 
+async def _execute_tool(
+    executor: Any,
+    tool_name: str,
+    payload: dict[str, Any],
+    *,
+    caller: str,
+    risk_level: str,
+    trace_id: str | None,
+    run_id: str | None,
+) -> ToolResult:
+    try:
+        return await executor.execute(
+            tool_name,
+            payload,
+            caller=caller,
+            risk_level=risk_level,
+            trace_id=trace_id,
+            run_id=run_id,
+        )
+    except TypeError as exc:
+        message = str(exc)
+        if "unexpected keyword" not in message and "positional" not in message:
+            raise
+        return await executor.execute(tool_name, payload)
+
+
 def _sandbox_degraded_result(language: str) -> ToolResult:
     data = {
         "language": language,
@@ -449,6 +499,11 @@ def _fallback_name(tool_name: str) -> str:
         "compliance_check": "conservative compliance result",
         "ai_coding": "manual approval placeholder",
     }.get(tool_name, "failed ToolResult")
+
+
+def _placeholder_evidence_allowed() -> bool:
+    app_env = str(getattr(settings, "app_env", "development") or "").lower()
+    return app_env in {"development", "dev", "test", "testing", "local"}
 
 
 def _sanitize_payload(payload: dict[str, Any]) -> dict[str, Any]:

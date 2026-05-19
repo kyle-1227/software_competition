@@ -97,7 +97,6 @@ class AICodingTool(BaseTool):
                 "language": data.get("language", language),
                 "script": data.get("script", ""),
                 "explanation": data.get("explanation", f"LLM 生成的 {language} 诊断脚本"),
-                "execution_allowed": True,
                 "warnings": data.get("warnings", [
                     "LLM 生成的脚本仅用于比赛演示，执行前仍需人工复核。",
                     "SandboxExecutor 会执行安全检查、临时目录隔离和超时限制。",
@@ -132,7 +131,6 @@ class AICodingTool(BaseTool):
                 "language": language,
                 "script": script,
                 "explanation": f"基于任务生成 {language} 草案（fallback）。",
-                "execution_allowed": True,
                 "warnings": [
                     "脚本仅用于比赛演示，执行前仍需人工复核。",
                     "SandboxExecutor 会执行安全检查、临时目录隔离和超时限制。",

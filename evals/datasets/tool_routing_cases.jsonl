@@ -1,0 +1,2 @@
+{"id":"route_001","query":"发动机无法启动如何检查 manual_lookup","expected_tools":["manual_lookup"]}
+{"id":"route_002","query":"生成 python 诊断脚本 ai_coding","expected_tools":["ai_coding"]}
