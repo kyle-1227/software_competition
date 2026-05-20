@@ -45,10 +45,21 @@ class RuntimeExecutor:
             runtime_state.status = "failed"
             return self._failed_result(runtime_state, exc)
 
-        runtime_state.status = "succeeded"
+        runtime_state.status = self._status_from_final_state(final_state)
         runtime_state.ended_at = utc_now()
         runtime_state.events.append(
-            RuntimeEvent(type="runtime.completed", message="Runtime execution completed")
+            RuntimeEvent(
+                type=(
+                    "runtime.waiting_for_approval"
+                    if runtime_state.status == "waiting_for_approval"
+                    else "runtime.completed"
+                ),
+                message=(
+                    "Runtime execution is waiting for human approval"
+                    if runtime_state.status == "waiting_for_approval"
+                    else "Runtime execution completed"
+                ),
+            )
         )
         final_state["runtime_contract"] = {
             **final_state.get("runtime_contract", {}),
@@ -65,6 +76,14 @@ class RuntimeExecutor:
             events=runtime_state.events,
             started_at=runtime_state.started_at,
         )
+
+    @staticmethod
+    def _status_from_final_state(final_state: dict[str, Any]) -> str:
+        response = final_state.get("response")
+        response_status = response.get("status") if isinstance(response, dict) else None
+        if final_state.get("status") == "pending_approval" or response_status == "pending_approval":
+            return "waiting_for_approval"
+        return "succeeded"
 
     async def _invoke_graph(
         self,

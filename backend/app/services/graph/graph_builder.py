@@ -10,6 +10,7 @@ from app.schemas.trace import SpanKind
 from app.services.agent_loop.actions import AgentLoopAction
 from app.services.agent_loop.controller import (
     AgentLoopController,
+    approval_scope_hash,
     has_effective_evidence,
     placeholder_used_in_state,
 )
@@ -119,7 +120,7 @@ def _build_new_graph(services, StateGraph, END, checkpointer) -> Any:
         "output_guardrail_node" if use_og else "trace_node",
     )
     if use_og:
-        graph.add_edge("approval_node", "output_guardrail_node")
+        graph.add_edge("approval_node", "trace_node")
         graph.add_edge("clarification_node", "output_guardrail_node")
         graph.add_edge("fail_safe_node", "output_guardrail_node")
         graph.add_edge("output_guardrail_node", "trace_node")
@@ -201,6 +202,11 @@ def _build_shared_nodes(services) -> dict[str, Any]:
             "degradation_events": [],
             "requires_human_approval": False,
             "approval_reason": None,
+            "approval": None,
+            "approval_decision": None,
+            "approved_approval_id": None,
+            "approval_scope_hash": None,
+            "status": "completed",
             "clarification_question": None,
             "fail_safe_reason": None,
         }
@@ -229,6 +235,12 @@ def _build_shared_nodes(services) -> dict[str, Any]:
         return {}
 
     async def memory_save_node(state: dict[str, Any]) -> dict[str, Any]:
+        if (
+            state.get("status") == "pending_approval"
+            or state.get("verification_passed") is not True
+            or state.get("verification_skipped_reason")
+        ):
+            return {"memory": services.memory_store.get_history(state["session_id"])}
         summary = {
             "question": state.get("question"),
             "answer": state.get("answer"),
@@ -259,6 +271,8 @@ def _build_shared_nodes(services) -> dict[str, Any]:
                 "ai_coding": None,
                 "llm_usage": None,
                 "llm_model": None,
+                "status": "completed",
+                "approval": None,
             }
             return {"response": rejection, **rejection}
 
@@ -282,6 +296,8 @@ def _build_shared_nodes(services) -> dict[str, Any]:
             "ai_coding": state.get("ai_coding"),
             "llm_usage": state.get("llm_usage"),
             "llm_model": state.get("llm_model"),
+            "status": state.get("status") or "completed",
+            "approval": state.get("approval"),
         }
         if not response["sop"]:
             response["sop"] = [
@@ -408,10 +424,18 @@ def _ensure_new_services(services) -> None:
         services.agent_loop_controller = AgentLoopController()
     if not hasattr(services, "agent_loop_policy") or services.agent_loop_policy is None:
         services.agent_loop_policy = AgentLoopPolicy.from_settings()
-    if not hasattr(services, "final_verifier") or services.final_verifier is None:
-        from app.verification.final_verifier import FinalVerifier
+    if not hasattr(services, "approval_store") or services.approval_store is None:
+        from app.services.approval_store import ApprovalStore
 
-        services.final_verifier = FinalVerifier()
+        services.approval_store = ApprovalStore()
+    if not hasattr(services, "final_verifier") or services.final_verifier is None:
+        from app.verification.final_verifier import DiagnosticFinalVerifier
+
+        services.final_verifier = DiagnosticFinalVerifier()
+    if not hasattr(services, "terminal_verifier") or services.terminal_verifier is None:
+        from app.verification.final_verifier import TerminalStateVerifier
+
+        services.terminal_verifier = TerminalStateVerifier()
 
 
 def _wrap_node_with_span(services, node_name: str, kind: SpanKind, node):
@@ -622,6 +646,8 @@ def _build_new_nodes(services) -> dict[str, Any]:
         )
 
     async def output_guardrail_node(state: dict[str, Any]) -> dict[str, Any]:
+        if state.get("status") == "pending_approval":
+            return {}
         if state.get("verification_passed") is False:
             return {}
         answer = state.get("answer", "")
@@ -636,15 +662,17 @@ def _build_new_nodes(services) -> dict[str, Any]:
         }
 
     async def final_verifier_node(state: dict[str, Any]) -> dict[str, Any]:
-        if (
-            state.get("requires_human_approval")
-            or state.get("clarification_question")
-            or state.get("fail_safe_reason")
-        ):
-            return {"verification_passed": True, "verification_issues": []}
+        terminal_update = services.terminal_verifier.terminal_skip_update(state)
+        if terminal_update is not None:
+            return terminal_update
         result = services.final_verifier.verify(state)
         if result.passed:
-            return {"verification_passed": True, "verification_issues": []}
+            return {
+                "status": "completed",
+                "verification_passed": True,
+                "verification_issues": [],
+                "verification_skipped_reason": None,
+            }
         return services.final_verifier.failure_update(result.issues)
 
     async def loop_decision_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -746,6 +774,40 @@ def _build_new_nodes(services) -> dict[str, Any]:
                 "issues": [str(reason)],
                 "feedback": "fail-safe",
             },
+            "warnings": _dedupe_strings(state.get("warnings", []) + [str(reason)]),
+        }
+
+    async def approval_node(state: dict[str, Any]) -> dict[str, Any]:
+        reason = state.get("approval_reason") or _loop_reason(state)
+        scope_hash = approval_scope_hash(state)
+        record = services.approval_store.create(
+            reason=str(reason) if reason else None,
+            risk_level=state.get("risk_level"),
+            trace_id=state.get("trace_id"),
+            session_id=state.get("session_id"),
+            approval_scope_hash=scope_hash,
+            state_snapshot={
+                **state,
+                "approval_scope_hash": scope_hash,
+                "status": "pending_approval",
+            },
+        )
+        approval = {
+            "approval_id": record.approval_id,
+            "status": record.status,
+            "reason": record.reason,
+            "risk_level": record.risk_level,
+            "trace_id": record.trace_id,
+            "approval_scope_hash": record.approval_scope_hash,
+        }
+        return {
+            "answer": "This request is waiting for human approval. No diagnostic answer has been finalized.",
+            "status": "pending_approval",
+            "approval": approval,
+            "pending_approval": True,
+            "approval_scope_hash": scope_hash,
+            "requires_human_approval": True,
+            "approval_reason": reason,
             "warnings": _dedupe_strings(state.get("warnings", []) + [str(reason)]),
         }
 
@@ -996,6 +1058,58 @@ def _build_fallback_graph(services):
             return await finish()
 
     return _FallbackGraph()
+
+
+async def resume_approval_decision(services, approval_record) -> dict[str, Any]:
+    """Resume a saved approval snapshot after a human decision."""
+    nodes = _build_new_nodes(services)
+    current: dict[str, Any] = dict(approval_record.state_snapshot or {})
+    current.update(
+        {
+            "approval_decision": approval_record.status,
+            "approved_approval_id": (
+                approval_record.approval_id
+                if approval_record.status == "approved"
+                else None
+            ),
+            "approval_scope_hash": approval_record.approval_scope_hash,
+            "pending_approval": False,
+            "requires_human_approval": False,
+            "status": "completed",
+            "approval": {
+                "approval_id": approval_record.approval_id,
+                "status": approval_record.status,
+                "reason": approval_record.reason,
+                "risk_level": approval_record.risk_level,
+                "trace_id": approval_record.trace_id,
+                "approval_scope_hash": approval_record.approval_scope_hash,
+            },
+        }
+    )
+
+    async def apply(node_name: str) -> None:
+        nonlocal current
+        current |= await nodes[node_name](current)
+
+    if approval_record.status == "rejected":
+        await apply("fail_safe_node")
+        await apply("final_verifier_node")
+    else:
+        current["answer"] = ""
+        await apply("evaluator_optimizer_node")
+        await apply("post_eval_loop_decision_node")
+        route = nodes["route_post_eval_loop_decision"](current)
+        if route in {"approval", "clarification", "fail_safe"}:
+            await apply(f"{route}_node")
+        else:
+            await apply("final_verifier_node")
+
+    if getattr(settings, "use_output_guardrail", False):
+        await apply("output_guardrail_node")
+    await apply("trace_node")
+    await apply("memory_save_node")
+    await apply("finalize_node")
+    return current
 
 
 def _loop_decision_update(state: dict[str, Any], services) -> dict[str, Any]:

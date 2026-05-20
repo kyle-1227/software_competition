@@ -1,4 +1,4 @@
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 from pydantic import StringConstraints
@@ -53,6 +53,15 @@ class EvaluationResult(BaseModel):
     feedback: str | None = None
 
 
+class ApprovalSummary(BaseModel):
+    approval_id: str
+    status: str
+    reason: str | None = None
+    risk_level: str | None = None
+    trace_id: str | None = None
+    approval_scope_hash: str | None = None
+
+
 class QueryResponse(BaseModel):
     answer: str
     plan: list[PlanStep]
@@ -65,3 +74,5 @@ class QueryResponse(BaseModel):
     ai_coding: dict[str, Any] | None = None
     llm_usage: dict[str, Any] | None = None
     llm_model: str | None = None
+    status: Literal["completed", "pending_approval"] = "completed"
+    approval: ApprovalSummary | None = None

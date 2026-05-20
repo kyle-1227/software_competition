@@ -46,6 +46,12 @@ class HarnessState(TypedDict, total=False):
     degradation_events: list[dict[str, Any]]
     requires_human_approval: bool
     approval_reason: str | None
+    approval: dict[str, Any] | None
+    approval_decision: str | None
+    approved_approval_id: str | None
+    approval_scope_hash: str | None
+    pending_approval: bool
+    status: str
     clarification_question: str | None
     fail_safe_reason: str | None
     _agent_loop_decision: dict[str, Any]

@@ -6,26 +6,27 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.answer_generation import (
-    INSUFFICIENT_EVIDENCE_ANSWER,
-    LOCAL_DIAGNOSTIC_MODEL,
     draft_answer_with_llm,
 )
 
 
 @pytest.mark.anyio
-async def test_draft_answer_returns_insufficient_evidence_without_evidence_id() -> None:
+async def test_draft_answer_fails_closed_without_evidence_id() -> None:
     result = await draft_answer_with_llm(
         SimpleNamespace(llm_client=None),
         {"question": "engine will not start", "evidence": []},
     )
 
-    assert result["llm_model"] == LOCAL_DIAGNOSTIC_MODEL
-    assert result["answer"] == INSUFFICIENT_EVIDENCE_ANSWER
+    assert result["llm_model"] is None
+    assert result["answer"] == ""
+    assert result["llm_generation_failed"] is True
+    assert result["safe_fallback_available"] is False
     assert any("insufficient evidence_id" in warning for warning in result["warnings"])
 
 
 @pytest.mark.anyio
-async def test_draft_answer_summarizes_only_evidence_with_evidence_id() -> None:
+async def test_draft_answer_calls_llm_with_filtered_evidence() -> None:
+    client = _RecordingLLMClient(text="Use evidence ev-1 only.")
     state = {
         "question": "engine will not start",
         "device_name": "engine",
@@ -49,18 +50,26 @@ async def test_draft_answer_summarizes_only_evidence_with_evidence_id() -> None:
         ],
     }
 
-    result = await draft_answer_with_llm(SimpleNamespace(llm_client=None), state)
+    result = await draft_answer_with_llm(SimpleNamespace(llm_client=client), state)
 
+    assert client.calls
+    context = client.calls[0]["context"]
+    assert context["evaluation_feedback"] == ""
+    assert len(context["evidence"]) == 1
+    assert context["evidence"][0]["evidence_id"] == "ev-1"
+    assert "This must not be used" not in str(context)
+    assert "reasoning" not in str(context)
+    assert "thinking" not in str(context)
     assert "ev-1" in result["answer"]
-    assert "Check the starter relay connector." in result["answer"]
-    assert "This must not be used" not in result["answer"]
-    assert "reasoning" not in result["answer"]
-    assert "thinking" not in result["answer"]
+    assert result["llm_generation_failed"] is False
 
 
 @pytest.mark.anyio
-async def test_draft_answer_does_not_call_llm_even_when_available() -> None:
-    client = _RecordingLLMClient()
+async def test_draft_answer_marks_model_fallback_as_generation_failure() -> None:
+    client = _RecordingLLMClient(
+        text="ModelGateway deterministic fallback. Context: {}",
+        warnings=["deterministic fallback used"],
+    )
 
     result = await draft_answer_with_llm(
         SimpleNamespace(llm_client=client),
@@ -77,8 +86,9 @@ async def test_draft_answer_does_not_call_llm_even_when_available() -> None:
         },
     )
 
-    assert client.calls == []
-    assert "Only this evidence may appear." in result["answer"]
+    assert client.calls
+    assert result["answer"] == ""
+    assert result["llm_generation_failed"] is True
 
 
 def test_evaluator_optimizer_imports_answer_generation_not_graph_builder() -> None:
@@ -92,9 +102,16 @@ def test_evaluator_optimizer_imports_answer_generation_not_graph_builder() -> No
 
 
 class _RecordingLLMClient:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        text: str = "not allowed",
+        warnings: list[str] | None = None,
+    ) -> None:
         self.calls: list[dict] = []
+        self.text = text
+        self.warnings = warnings or []
 
-    async def generate_text(self, prompt: str, context: dict | None = None):
+    async def generate_text(self, prompt: str, context: dict | None = None, **kwargs):
+        del kwargs
         self.calls.append({"prompt": prompt, "context": context})
-        return SimpleNamespace(text="not allowed")
+        return SimpleNamespace(text=self.text, model="test-model", usage={}, warnings=self.warnings)

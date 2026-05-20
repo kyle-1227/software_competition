@@ -98,7 +98,7 @@ def _default_callers(tool_name: str) -> list[str]:
     if tool_name == "ai_coding":
         return ["ai_coding", "runtime", "unknown", "mixed"]
     if tool_name == "compliance_check":
-        return ["fault_triage", "sop_guidance", "runtime", "unknown", "general", "mixed"]
+        return ["fault_triage", "sop_guidance", "runtime", "unknown", "general", "mixed", "evaluator_optimizer"]
     return ["*"]
 
 

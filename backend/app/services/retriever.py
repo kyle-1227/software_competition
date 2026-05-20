@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -205,16 +206,20 @@ def _node_to_evidence(node_with_score: Any) -> EvidenceItem:
     node = getattr(node_with_score, "node", node_with_score)
     metadata = _node_metadata(node)
     text = _node_text(node)
+    source = str(metadata.get("source") or DEFAULT_MANUAL_SOURCE)
+    page = _optional_int(metadata.get("page"))
+    chunk_id = metadata.get("chunk_id")
     return EvidenceItem(
-        source=str(metadata.get("source") or DEFAULT_MANUAL_SOURCE),
-        page=_optional_int(metadata.get("page")),
+        source=source,
+        page=page,
         snippet=_snippet(text),
         score=_optional_float(getattr(node_with_score, "score", None)),
         metadata={
             "chapter": metadata.get("chapter"),
             "section": metadata.get("section"),
             "block_type": metadata.get("block_type"),
-            "chunk_id": metadata.get("chunk_id"),
+            "chunk_id": chunk_id,
+            "evidence_id": _make_evidence_id(source, page, chunk_id, text),
         },
     )
 
@@ -234,6 +239,11 @@ def _node_text(node: Any) -> str:
 
 def _snippet(text: str, limit: int = 220) -> str:
     return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
+
+def _make_evidence_id(source: str, page: int | None, chunk_id: str | None, text: str) -> str:
+    raw = f"{source}|{page}|{chunk_id}|{text[:100]}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
 
 
 def _default_keyword_fallback(
@@ -299,16 +309,21 @@ def _chunk_haystack(chunk: dict[str, Any]) -> str:
 
 def _chunk_to_evidence(chunk: dict[str, Any], score: float) -> EvidenceItem:
     metadata = chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
+    source = str(chunk.get("source") or DEFAULT_MANUAL_SOURCE)
+    page = _optional_int(chunk.get("page"))
+    chunk_id = chunk.get("chunk_id") or metadata.get("chunk_id")
+    text = str(chunk.get("text") or "")
     return EvidenceItem(
-        source=str(chunk.get("source") or DEFAULT_MANUAL_SOURCE),
-        page=_optional_int(chunk.get("page")),
-        snippet=_snippet(str(chunk.get("text") or "")),
+        source=source,
+        page=page,
+        snippet=_snippet(text),
         score=round(score, 4),
         metadata={
             "chapter": chunk.get("chapter") or metadata.get("chapter"),
             "section": chunk.get("section") or metadata.get("section"),
             "block_type": chunk.get("block_type") or metadata.get("block_type"),
-            "chunk_id": chunk.get("chunk_id") or metadata.get("chunk_id"),
+            "chunk_id": chunk_id,
+            "evidence_id": _make_evidence_id(source, page, chunk_id, text),
         },
     )
 

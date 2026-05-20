@@ -152,6 +152,32 @@ type QueryResponse = {
   ai_coding: AICodingResult | null;
   llm_usage: JsonMap | null;
   llm_model: string | null;
+  status?: "completed" | "pending_approval";
+  approval?: ApprovalSummary | null;
+};
+
+type ApprovalSummary = {
+  approval_id: string;
+  status: string;
+  reason?: string | null;
+  risk_level?: string | null;
+  trace_id?: string | null;
+  approval_scope_hash?: string | null;
+};
+
+type ApprovalRecord = ApprovalSummary & {
+  session_id?: string | null;
+  state_snapshot?: JsonMap;
+  reviewer?: string | null;
+  note?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  decided_at?: string | null;
+};
+
+type ApprovalDecisionResponse = {
+  approval: ApprovalRecord;
+  response: QueryResponse | null;
 };
 
 const sceneConfig: Record<SceneKey, SceneConfig> = {
@@ -582,6 +608,9 @@ function App() {
   const [correctionText, setCorrectionText] = useState("");
   const [feedbackNotice, setFeedbackNotice] = useState("");
   const [isLeftCollapsed, setIsLeftCollapsed] = useState(false);
+  const [pendingApprovals, setPendingApprovals] = useState<ApprovalRecord[]>([]);
+  const [approvalNotice, setApprovalNotice] = useState("");
+  const [approvalLoadingId, setApprovalLoadingId] = useState<string | null>(null);
   const docInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const latestThreadItem = thread[thread.length - 1];
@@ -689,6 +718,9 @@ function App() {
             : item,
         ),
       );
+      if (envelope.data.status === "pending_approval") {
+        await loadPendingApprovals();
+      }
     } catch (caught) {
       setThread((current) =>
         current.map((item) =>
@@ -704,6 +736,55 @@ function App() {
     } finally {
       window.clearTimeout(retrievingTimer);
       setWorkflowStatus("completed");
+    }
+  }
+
+  async function loadPendingApprovals() {
+    setApprovalNotice("");
+    try {
+      const response = await fetch("/api/approvals?status=pending");
+      const envelope = await readApiEnvelope<ApprovalRecord[]>(response);
+      if (!response.ok || !envelope.success || !envelope.data) {
+        throw new Error(envelope.error?.message || "Failed to load approvals");
+      }
+      setPendingApprovals(envelope.data);
+    } catch (caught) {
+      setApprovalNotice(caught instanceof Error ? caught.message : "Failed to load approvals");
+    }
+  }
+
+  async function decideApproval(approvalId: string, decision: "approved" | "rejected") {
+    setApprovalLoadingId(approvalId);
+    setApprovalNotice("");
+    try {
+      const response = await fetch(`/api/approvals/${approvalId}/decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, reviewer: "frontend-workbench" }),
+      });
+      const envelope = await readApiEnvelope<ApprovalDecisionResponse>(response);
+      if (!response.ok || !envelope.success || !envelope.data) {
+        throw new Error(envelope.error?.message || "Approval decision failed");
+      }
+      const resumed = envelope.data.response;
+      if (resumed) {
+        setThread((current) => [
+          ...current,
+          {
+            id: Date.now(),
+            prompt: `Approval ${decision}: ${approvalId}`,
+            response: resumed,
+            error: null,
+            loading: false,
+          },
+        ]);
+      }
+      setApprovalNotice(`Approval ${decision}.`);
+      await loadPendingApprovals();
+    } catch (caught) {
+      setApprovalNotice(caught instanceof Error ? caught.message : "Approval decision failed");
+    } finally {
+      setApprovalLoadingId(null);
     }
   }
 
@@ -887,6 +968,49 @@ function App() {
         </section>
 
         <section className="thread" aria-label="对话内容">
+          <section className="approval-workbench" aria-label="Human approval workbench">
+            <div className="assistant-section-title">
+              <span>Human Approval</span>
+              <small>{pendingApprovals.length} pending</small>
+            </div>
+            <button className="tool-button" onClick={loadPendingApprovals} type="button">
+              <Icon name="check" />
+              <span>Refresh approvals</span>
+            </button>
+            {approvalNotice ? <p className="feedback-notice">{approvalNotice}</p> : null}
+            {pendingApprovals.length ? (
+              <div className="approval-list">
+                {pendingApprovals.map((approval) => (
+                  <article className="approval-card" key={approval.approval_id}>
+                    <div>
+                      <strong>{approval.reason || "Human review required"}</strong>
+                      <span>
+                        {approval.risk_level || "unknown risk"} 路 {approval.trace_id || "no trace"}
+                      </span>
+                      <small>{approval.approval_scope_hash}</small>
+                    </div>
+                    <div className="approval-actions">
+                      <button
+                        disabled={approvalLoadingId === approval.approval_id}
+                        onClick={() => decideApproval(approval.approval_id, "approved")}
+                        type="button"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        disabled={approvalLoadingId === approval.approval_id}
+                        onClick={() => decideApproval(approval.approval_id, "rejected")}
+                        type="button"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : null}
+          </section>
+
           {thread.map((item, index) => {
             const isLatest = index === thread.length - 1;
             const answerText = item.loading

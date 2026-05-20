@@ -155,11 +155,16 @@ async def test_manual_lookup_records_tool_span(tmp_path) -> None:
 async def test_answer_generation_records_llm_span(tmp_path) -> None:
     store = TraceStore(storage_path=tmp_path)
     trace_id = store.start_trace()
-    services = SimpleNamespace(trace_store=store, llm_client=None)
+    services = SimpleNamespace(trace_store=store, llm_client=_LLM())
 
     await draft_answer_with_llm(
         services,
-        {"trace_id": trace_id, "question": "q", "evidence": [], "tool_calls": []},
+        {
+            "trace_id": trace_id,
+            "question": "q",
+            "evidence": [{"evidence_id": "ev-1", "source": "manual", "snippet": "safe"}],
+            "tool_calls": [],
+        },
     )
 
     span = _find_span(store.get_trace_tree(trace_id), "llm.answer_generation")
@@ -174,13 +179,19 @@ async def test_evaluator_optimizer_records_span(tmp_path) -> None:
     trace_id = store.start_trace()
     services = SimpleNamespace(
         trace_store=store,
-        llm_client=None,
+        llm_client=_LLM(),
         tool_registry=_ComplianceRegistry(),
     )
+    services.tool_broker = _Broker(store)
     optimizer = EvaluatorOptimizer(evaluator=_AsyncEvaluator())
 
     await optimizer.generate_and_evaluate(
-        {"trace_id": trace_id, "question": "q", "evidence": [], "tool_calls": []},
+        {
+            "trace_id": trace_id,
+            "question": "q",
+            "evidence": [{"evidence_id": "ev-1", "source": "manual", "snippet": "safe"}],
+            "tool_calls": [],
+        },
         services,
     )
 
@@ -248,6 +259,37 @@ class _ComplianceRegistry:
             data={"is_safe": True},
             metadata={"duration_ms": 1},
         )
+
+
+class _LLM:
+    async def generate_text(self, prompt: str, context: dict[str, Any] | None = None, **kwargs):
+        del prompt, context, kwargs
+        return SimpleNamespace(text="Safe answer from ev-1.", model="test-model", usage={}, warnings=[])
+
+
+class _Broker:
+    def __init__(self, store: TraceStore) -> None:
+        self.store = store
+
+    async def execute(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        *,
+        caller: str = "unknown",
+        risk_level: str = "unknown",
+        trace_id: str | None = None,
+        run_id: str | None = None,
+        approved: bool = False,
+    ) -> ToolResult:
+        del payload, caller, risk_level, run_id, approved
+        async with trace_span(self.store, trace_id, f"tool_broker.{name}", SpanKind.TOOL):
+            return ToolResult(
+                tool_name=name,
+                success=True,
+                data={"is_safe": True},
+                metadata={"duration_ms": 1, "brokered": True},
+            )
 
 
 class _AsyncEvaluator:

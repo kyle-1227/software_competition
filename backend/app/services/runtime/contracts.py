@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 RuntimeStatus = Literal[
     "accepted",
     "running",
+    "waiting_for_approval",
     "succeeded",
     "failed",
     "cancelled",

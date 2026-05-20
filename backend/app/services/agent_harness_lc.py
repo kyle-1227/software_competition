@@ -13,7 +13,7 @@ from app.services.runtime import (
 )
 from app.services.tool_registry import ToolRegistry, ToolResult
 from app.services.trace_store import TraceStore
-from app.services.graph.graph_builder import build_harness_graph
+from app.services.graph.graph_builder import build_harness_graph, resume_approval_decision
 from app.tools.broker import ToolBroker
 from app.tools.manifest import build_default_tool_manifests
 
@@ -58,6 +58,14 @@ class AgentHarness:
             adapter=self.runtime_adapter
         )
         self.services = services or self._build_services()
+        if self.llm_client is None and getattr(self.services, "llm_client", None) is not None:
+            self.llm_client = self.services.llm_client
+        if (
+            model_gateway is None
+            and getattr(self.services, "model_gateway", None) is None
+            and self.llm_client is not None
+        ):
+            self.model_gateway = ModelGateway(deepseek_client=self.llm_client)
         if not hasattr(self.services, "model_gateway"):
             self.services.model_gateway = self.model_gateway
         if not hasattr(self.services, "llm_client"):
@@ -66,6 +74,10 @@ class AgentHarness:
             self.services.policy_engine = self.policy_engine
         if not hasattr(self.services, "tool_broker"):
             self.services.tool_broker = self.tool_broker
+        if not hasattr(self.services, "approval_store") or self.services.approval_store is None:
+            from app.services.approval_store import ApprovalStore
+
+            self.services.approval_store = ApprovalStore()
         self._bind_trace_store_to_tools()
         self.graph = graph or build_harness_graph(self.services)
 
@@ -84,6 +96,24 @@ class AgentHarness:
         runtime_result = await self.runtime_executor.execute(runtime_state, self.graph)
         return self.runtime_adapter.to_query_response(runtime_result)
 
+    async def resume_approval(self, approval_record: Any) -> QueryResponse:
+        final_state = await resume_approval_decision(self.services, approval_record)
+        final_state.pop("response", None)
+        runtime_result = self.runtime_adapter.from_harness_state(
+            final_state,
+            request_id=str(
+                final_state.get("runtime_contract", {}).get("request_id")
+                or final_state.get("runtime_request", {}).get("request_id")
+                or approval_record.approval_id
+            ),
+            status=(
+                "waiting_for_approval"
+                if final_state.get("status") == "pending_approval"
+                else "succeeded"
+            ),
+        )
+        return self.runtime_adapter.to_query_response(runtime_result)
+
     def _build_services(self):
         from types import SimpleNamespace
 
@@ -97,6 +127,9 @@ class AgentHarness:
             model_gateway=self.model_gateway,
             policy_engine=self.policy_engine,
             tool_broker=self.tool_broker,
+            approval_store=getattr(self.services, "approval_store", None)
+            if hasattr(self, "services")
+            else None,
             warnings=[],
         )
         services.agent_harness = self

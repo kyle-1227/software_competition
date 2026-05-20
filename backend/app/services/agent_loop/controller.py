@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from hashlib import sha256
 from typing import Any
 
 from app.services.agent_loop.actions import AgentLoopAction, AgentLoopDecision
@@ -50,10 +52,19 @@ class AgentLoopController:
         high_risk = _is_high_risk(state)
         valid_evidence = has_effective_evidence(state)
         placeholder_used = placeholder_used_in_state(state)
+        approval_granted = _approval_granted_for_scope(state)
+
+        if state.get("llm_generation_failed") and not state.get("safe_fallback_available"):
+            return AgentLoopDecision(
+                action=AgentLoopAction.FAIL_SAFE,
+                reason="LLM answer generation failed and no safe fallback is available",
+                confidence=0.0,
+            )
 
         if (
             high_risk
             and policy.high_risk_requires_approval
+            and not approval_granted
             and (not valid_evidence or _sandbox_unsafe(state) or _evaluation_unsafe(state))
         ):
             return AgentLoopDecision(
@@ -102,7 +113,7 @@ class AgentLoopController:
 
         if policy.high_risk_requires_approval and (
             high_risk or _sandbox_unsafe(state)
-        ):
+        ) and not approval_granted:
             return AgentLoopDecision(
                 action=AgentLoopAction.REQUIRE_APPROVAL,
                 reason="高风险操作或安全评估未通过，需要人工确认",
@@ -174,3 +185,36 @@ def _sandbox_unsafe(state: dict[str, Any]) -> bool:
 def _evaluation_unsafe(state: dict[str, Any]) -> bool:
     evaluation = state.get("evaluation")
     return isinstance(evaluation, dict) and evaluation.get("is_safe") is False
+
+
+def approval_scope_hash(state: dict[str, Any]) -> str:
+    evidence = state.get("evidence", [])
+    evidence_ids: list[str] = []
+    if isinstance(evidence, list):
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            evidence_ids.append(str(item.get("evidence_id") or metadata.get("evidence_id") or ""))
+    payload = {
+        "question": state.get("question"),
+        "device_name": state.get("device_name"),
+        "device_model": state.get("device_model"),
+        "risk_level": state.get("risk_level"),
+        "approval_reason": state.get("approval_reason"),
+        "evidence_ids": sorted(item for item in evidence_ids if item),
+        "sandbox_allowed": (
+            state.get("sandbox_result", {}).get("allowed")
+            if isinstance(state.get("sandbox_result"), dict)
+            else None
+        ),
+    }
+    return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _approval_granted_for_scope(state: dict[str, Any]) -> bool:
+    return (
+        state.get("approval_decision") == "approved"
+        and bool(state.get("approved_approval_id"))
+        and state.get("approval_scope_hash") == approval_scope_hash(state)
+    )

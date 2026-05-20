@@ -7,19 +7,15 @@ from typing import Any
 from app.core.config import settings
 from app.schemas.query import EvaluationResult
 from app.schemas.trace import SpanKind
-from app.services.agent_loop.retry import execute_tool_with_retry
 from app.services.answer_generation import draft_answer_with_llm
+from app.services.tool_registry import ToolResult
 from app.services.tracing.context import trace_span
 
 logger = logging.getLogger(__name__)
 
 
 class EvaluatorOptimizer:
-    """Evaluator-Optimizer 循环：生成→评估→反馈→再生成。
-
-    最多 N 轮迭代，每轮评估后如果置信度低于阈值且有 issues，
-    将反馈注入上下文重新生成。循环在节点内部完成，图保持 DAG。
-    """
+    """Evaluator-Optimizer loop: generate, evaluate, feed back, regenerate."""
 
     def __init__(self, evaluator: Any) -> None:
         self._evaluator = evaluator
@@ -61,17 +57,11 @@ class EvaluatorOptimizer:
                 ]
                 or [0]
             )
-            compliance_degraded = any(
-                isinstance(call, dict)
-                and call.get("tool_name") == "compliance_check"
-                and call.get("degraded")
-                for call in tool_calls
-            )
             compliance_success = any(
                 isinstance(call, dict)
                 and call.get("tool_name") == "compliance_check"
                 and call.get("status") == "success"
-                and not call.get("degraded")
+                and bool(call.get("brokered"))
                 for call in tool_calls
             )
             span.set_metadata(
@@ -84,12 +74,16 @@ class EvaluatorOptimizer:
                     "best_confidence": confidence,
                     "final_confidence": confidence,
                     "issues_count": len(issues),
-                    "compliance_degraded": compliance_degraded,
                     "compliance_attempts": compliance_attempts,
                     "compliance_success": compliance_success,
                     "answer_regeneration_count": state.get(
                         "answer_regeneration_count", 0
                     ),
+                    "feedback_used": bool(result.get("feedback_used")),
+                    "llm_generation_failed": bool(
+                        result.get("llm_generation_failed", False)
+                    ),
+                    "llm_model": result.get("llm_model"),
                 }
             )
             span.set_outputs(
@@ -120,52 +114,60 @@ class EvaluatorOptimizer:
         ]
         sop = state.get("sop", [])
 
-        best_answer = state.get("answer", "")
+        best_answer = str(state.get("answer", "") or "")
         best_eval: EvaluationResult | None = None
         best_confidence = 0.0
         iteration_count = 0
-        compliance_retry = None
-        compliance_result = None
+        compliance_result: ToolResult | None = None
+        generation_failed = False
+        feedback_used = False
+        llm_model = state.get("llm_model")
+        llm_usage = state.get("llm_usage")
+        warnings = list(state.get("warnings", [])) if isinstance(state.get("warnings"), list) else []
 
         for iteration in range(max_iterations):
             iteration_count = iteration + 1
             feedback = best_eval.feedback if best_eval else ""
+            generation_state = {
+                **state,
+                "previous_answer": best_answer,
+                "evaluation_feedback": feedback,
+                "generation_iteration": iteration_count,
+            }
 
-            if iteration == 0:
-                # First generation: use existing answer or generate
-                if not best_answer.strip():
-                    draft_result = await draft_answer_with_llm(services, state)
-                    best_answer = draft_result.get("answer", "")
+            if iteration == 0 and best_answer.strip():
+                generation_failed = False
             else:
-                # Regenerate with feedback
-                regen_state = {**state, "evaluation_feedback": feedback}
-                draft_result = await draft_answer_with_llm(services, regen_state)
-                best_answer = draft_result.get("answer", "")
+                if feedback:
+                    feedback_used = True
+                draft_result = await draft_answer_with_llm(services, generation_state)
+                best_answer = str(draft_result.get("answer", "") or "")
+                generation_failed = bool(draft_result.get("llm_generation_failed"))
+                llm_model = draft_result.get("llm_model")
+                llm_usage = draft_result.get("llm_usage")
+                warnings = _merge_warnings(warnings, draft_result.get("warnings", []))
 
             if not best_answer.strip():
+                if generation_failed:
+                    break
                 continue
 
-            # Run compliance check
-            compliance_retry = await execute_tool_with_retry(
-                services.tool_registry,
+            compliance_result = await _run_compliance_check(
+                services,
                 "compliance_check",
                 {"answer": best_answer},
-                trace_store=getattr(services, "trace_store", None),
                 trace_id=state.get("trace_id"),
+                risk_level=str(state.get("risk_level") or "unknown"),
             )
-            compliance_result = compliance_retry.result
 
-            # Evaluate
             evaluation = await self._evaluator.evaluate(
                 best_answer, evidence, tool_calls, sop
             )
 
-            # Track best
             if evaluation.confidence > best_confidence:
                 best_confidence = evaluation.confidence
                 best_eval = evaluation
 
-            # Stop condition
             if (
                 evaluation.confidence >= confidence_threshold
                 and not evaluation.issues
@@ -177,10 +179,14 @@ class EvaluatorOptimizer:
                 is_safe=False,
                 is_compliant=False,
                 confidence=0.0,
-                issues=["评估器未能产生有效的评估结果"],
+                issues=(
+                    ["llm_generation_failed"]
+                    if generation_failed
+                    else ["evaluator did not produce a valid result"]
+                ),
+                feedback="llm_generation_failed" if generation_failed else None,
             )
 
-        # Build tool_call for compliance check
         compliance_tc = {
             "tool_name": "compliance_check",
             "input": {"answer": _answer_summary(best_answer)},
@@ -199,22 +205,27 @@ class EvaluatorOptimizer:
                 if compliance_result is not None
                 else None
             ),
-            "degraded": compliance_retry.degraded if compliance_retry is not None else False,
-            "attempt": compliance_retry.attempts if compliance_retry is not None else None,
+            "degraded": False,
+            "attempt": 1 if compliance_result is not None else None,
+            "brokered": (
+                bool(compliance_result.metadata.get("brokered"))
+                if compliance_result is not None
+                else False
+            ),
         }
-        retry_tool_calls = compliance_retry.tool_calls if compliance_retry is not None else []
-        retry_events = (
-            compliance_retry.degradation_events if compliance_retry is not None else []
-        )
 
         return {
             "answer": best_answer,
             "evaluation": best_eval.model_dump(mode="json"),
             "iteration_count": iteration_count,
             "evaluation_feedback": best_eval.feedback or "",
-            "tool_calls": state.get("tool_calls", []) + retry_tool_calls + [compliance_tc],
-            "degradation_events": state.get("degradation_events", [])
-            + retry_events,
+            "feedback_used": feedback_used,
+            "tool_calls": state.get("tool_calls", []) + [compliance_tc],
+            "degradation_events": state.get("degradation_events", []),
+            "warnings": warnings,
+            "llm_model": llm_model,
+            "llm_usage": llm_usage,
+            "llm_generation_failed": generation_failed,
         }
 
 
@@ -224,3 +235,38 @@ def _answer_summary(answer: str) -> dict[str, Any]:
         "answer_hash": sha256(text.encode("utf-8")).hexdigest(),
         "answer_length": len(text),
     }
+
+
+async def _run_compliance_check(
+    services: Any,
+    name: str,
+    payload: dict[str, Any],
+    *,
+    trace_id: str | None,
+    risk_level: str,
+) -> ToolResult:
+    broker = getattr(services, "tool_broker", None)
+    if broker is None:
+        return ToolResult(
+            tool_name=name,
+            success=False,
+            error="ToolBroker unavailable for compliance_check",
+            metadata={"brokered": False},
+        )
+    return await broker.execute(
+        name,
+        payload,
+        caller="evaluator_optimizer",
+        risk_level=risk_level,
+        trace_id=trace_id,
+    )
+
+
+def _merge_warnings(current: list[str], extra: Any) -> list[str]:
+    result = list(current)
+    if isinstance(extra, list):
+        for item in extra:
+            text = str(item)
+            if text not in result:
+                result.append(text)
+    return result

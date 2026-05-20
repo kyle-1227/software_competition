@@ -174,6 +174,7 @@ textarea:focus-visible {
 .tool-button,
 .mode-switch button,
 .inline-evidence button,
+.approval-actions button,
 .feedback-actions button,
 .correction-panel button,
 .output-tags button {
@@ -181,6 +182,56 @@ textarea:focus-visible {
   border-radius: 8px;
   color: var(--ink);
   background: transparent;
+}
+
+.approval-workbench {
+  display: grid;
+  gap: 10px;
+  margin: 0 18px 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.approval-list {
+  display: grid;
+  gap: 8px;
+}
+
+.approval-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.approval-card div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.approval-card span,
+.approval-card small {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.approval-actions button {
+  min-height: 34px;
+  padding: 0 10px;
+  background: var(--sage-soft);
 }
 
 .new-chat-button {

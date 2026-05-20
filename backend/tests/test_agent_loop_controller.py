@@ -52,6 +52,20 @@ def test_loop_fails_safe_after_max_steps() -> None:
     assert decision.action == AgentLoopAction.FAIL_SAFE
 
 
+def test_loop_fails_safe_when_llm_generation_failed_without_safe_fallback() -> None:
+    decision = AgentLoopController().decide(
+        {
+            "question": "q",
+            "evidence": [_evidence()],
+            "llm_generation_failed": True,
+            "safe_fallback_available": False,
+        },
+        _policy(),
+    )
+
+    assert decision.action == AgentLoopAction.FAIL_SAFE
+
+
 def test_loop_finalizes_when_evidence_and_evaluation_ok() -> None:
     decision = AgentLoopController().decide(
         {

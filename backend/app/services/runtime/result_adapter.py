@@ -27,16 +27,18 @@ class RuntimeResultAdapter:
         else:
             response_dict = QueryResponse(
                 answer=str(final_state.get("answer", "")),
-                plan=final_state.get("plan", []),
-                evidence=final_state.get("evidence", []),
-                tool_calls=final_state.get("tool_calls", []),
+                plan=_list_or_empty(final_state.get("plan")),
+                evidence=_list_or_empty(final_state.get("evidence")),
+                tool_calls=_list_or_empty(final_state.get("tool_calls")),
                 evaluation=final_state.get("evaluation"),
                 trace_id=final_state.get("trace_id"),
-                sop=final_state.get("sop", []),
-                memory=final_state.get("memory", []),
+                sop=_list_or_empty(final_state.get("sop")),
+                memory=_list_or_empty(final_state.get("memory")),
                 ai_coding=final_state.get("ai_coding"),
                 llm_usage=final_state.get("llm_usage"),
                 llm_model=final_state.get("llm_model"),
+                status=final_state.get("status") or "completed",
+                approval=final_state.get("approval"),
             ).model_dump(mode="json")
 
         return RuntimeResult(
@@ -68,3 +70,7 @@ class RuntimeResultAdapter:
         if not isinstance(messages, list):
             return []
         return [redact_trace_text(str(item))[:500] for item in messages]
+
+
+def _list_or_empty(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []

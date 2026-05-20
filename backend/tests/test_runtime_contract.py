@@ -5,7 +5,7 @@ import pytest
 
 from app.schemas.query import QueryRequest, QueryResponse
 from app.services.agent_harness_lc import AgentHarness
-from app.services.runtime import RuntimeResultAdapter, RuntimeStateFactory
+from app.services.runtime import RuntimeExecutor, RuntimeResultAdapter, RuntimeStateFactory
 
 
 class CapturingGraph:
@@ -29,6 +29,34 @@ class CapturingGraph:
             "ai_coding": None,
             "llm_usage": None,
             "llm_model": None,
+        }
+
+
+class PendingApprovalGraph:
+    async def ainvoke(self, state: dict[str, Any], config=None):
+        del config
+        return {
+            **state,
+            "answer": "waiting",
+            "plan": [],
+            "evidence": [],
+            "tool_calls": [],
+            "evaluation": None,
+            "trace_id": "trace-approval",
+            "sop": [],
+            "memory": [],
+            "ai_coding": None,
+            "llm_usage": None,
+            "llm_model": None,
+            "status": "pending_approval",
+            "approval": {
+                "approval_id": "approval-1",
+                "status": "pending",
+                "reason": "risk",
+                "risk_level": "high",
+                "trace_id": "trace-approval",
+                "approval_scope_hash": "scope",
+            },
         }
 
 
@@ -65,6 +93,20 @@ async def test_agent_harness_runs_query_through_runtime_contract() -> None:
     assert graph.initial_state["runtime_request"]["request_id"] == "req-1"
     assert graph.initial_state["runtime_contract"]["status"] == "running"
     assert graph.config == {"configurable": {"thread_id": "session-1"}}
+
+
+@pytest.mark.anyio
+async def test_runtime_executor_marks_pending_approval_as_waiting() -> None:
+    runtime_state = RuntimeStateFactory().from_query_request(
+        QueryRequest(question="q", session_id="session-1"),
+        request_id="req-approval",
+    )
+
+    result = await RuntimeExecutor().execute(runtime_state, PendingApprovalGraph())
+
+    assert result.status == "waiting_for_approval"
+    assert result.response["status"] == "pending_approval"
+    assert result.response["approval"]["approval_id"] == "approval-1"
 
 
 def test_runtime_result_adapter_redacts_internal_errors() -> None:

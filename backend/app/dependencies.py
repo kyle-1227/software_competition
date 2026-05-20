@@ -7,6 +7,7 @@ from fastapi import Depends, Request
 from app.model_gateway.gateway import ModelGateway
 from app.policy.engine import PolicyEngine
 from app.services.agent_harness_lc import AgentHarness
+from app.services.approval_store import ApprovalStore
 from app.services.evaluator import Evaluator
 from app.services.llm.deepseek_client import DeepSeekLLMClient
 from app.db.session import database_url
@@ -36,6 +37,7 @@ def _build_services() -> SimpleNamespace:
     )
     db_url = database_url()
     knowledge_repository = KnowledgeRepository(db_url) if db_url else None
+    approval_store = ApprovalStore()
     services = SimpleNamespace(
         trace_store=trace_store,
         knowledge_repository=knowledge_repository,
@@ -44,6 +46,7 @@ def _build_services() -> SimpleNamespace:
         tool_registry=tool_registry,
         policy_engine=policy_engine,
         tool_broker=tool_broker,
+        approval_store=approval_store,
         evaluator=evaluator,
         llm_client=llm_client,
         model_gateway=model_gateway,
@@ -74,6 +77,7 @@ def _attach_services(app, services: SimpleNamespace) -> None:
     app.state.tool_registry = services.tool_registry
     app.state.policy_engine = services.policy_engine
     app.state.tool_broker = services.tool_broker
+    app.state.approval_store = services.approval_store
     app.state.evaluator = services.evaluator
     app.state.llm_client = services.llm_client
     app.state.model_gateway = services.model_gateway
@@ -121,6 +125,10 @@ def get_tool_registry(request: Request) -> ToolRegistry:
 
 def get_tool_broker(request: Request) -> ToolBroker:
     return _get_services(request).tool_broker
+
+
+def get_approval_store(request: Request) -> ApprovalStore:
+    return _get_services(request).approval_store
 
 
 def get_llm_client(request: Request) -> DeepSeekLLMClient:

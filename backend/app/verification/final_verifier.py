@@ -10,7 +10,9 @@ from app.verification.sop_verifier import SOPVerifier
 VERIFICATION_FAILED_ANSWER = "当前证据不足，不能给出确定维修结论。建议补充手册资料或设备型号后再诊断。"
 
 
-class FinalVerifier:
+class DiagnosticFinalVerifier:
+    """Strong verifier for diagnostic answers that claim maintenance guidance."""
+
     def __init__(
         self,
         *,
@@ -48,6 +50,39 @@ class FinalVerifier:
                 "feedback": "verification_failed",
             },
             "fail_safe_reason": "verification_failed",
+            "status": "completed",
             "verification_passed": False,
             "verification_issues": issues,
         }
+
+
+class TerminalStateVerifier:
+    """Verifier for terminal non-diagnostic states.
+
+    Pending approval, clarification, and fail-safe messages are not diagnostic
+    answers. They may skip diagnostic verification only when the skip reason is
+    explicit and traceable.
+    """
+
+    TERMINAL_FIELDS = (
+        ("pending_approval", "pending_approval"),
+        ("clarification_question", "clarification"),
+        ("fail_safe_reason", "fail_safe"),
+    )
+
+    def terminal_skip_update(self, state: dict[str, Any]) -> dict[str, Any] | None:
+        for field, reason in self.TERMINAL_FIELDS:
+            if field == "pending_approval" and state.get("status") != "pending_approval":
+                continue
+            if field != "pending_approval" and not state.get(field):
+                continue
+            return {
+                "verification_passed": True,
+                "verification_issues": [],
+                "verification_skipped_reason": reason,
+            }
+        return None
+
+
+class FinalVerifier(DiagnosticFinalVerifier):
+    """Backward-compatible alias for older imports."""

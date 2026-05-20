@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     # Phase 3
     use_output_guardrail: bool = True
     trace_storage_path: str = "../data/traces"
+    approval_store_path: str = "../data/approvals/approvals.jsonl"
     trace_exporters: str = "console,json"
     # Phase 4
     memory_max_window: int = 20
